@@ -1,0 +1,6 @@
+{
+  "idf": "v4.4.8",
+  "target": "esp32",
+  "host_tests": "test/host",
+  "qemu": {"expect": "hello: tick 2", "timeout": 60, "psram": "4M"}
+}
