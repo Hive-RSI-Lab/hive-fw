@@ -1,0 +1,6 @@
+{
+  "name": "fw",
+  "description": "ESP32 firmware with ESP-IDF: an agent installs a project's pinned ESP-IDF (toolchains, cmake, ninja) and Espressif's QEMU into its HOME or, through a warden, the Hive's shared tools folder, then builds, runs plain-C unit tests on the host (gcc + Unity), boots the image in QEMU and judges the UART log (panic, abort, watchdog, reboot loop), and flashes or monitors a board over USB or the network (rfc2217). It runs no program of its own: bin/fw runs standard-library python scripts in the agent's sandbox. It never orders parts or touches a board the person hasn't attached.",
+  "provides": {"procedures": ["docs/README.md"]},
+  "projects": ["*"]
+}

@@ -1,0 +1,46 @@
+#!/bin/sh
+# fw inside the Hive: ESP32 firmware with ESP-IDF, from an agent's sandbox.
+#
+#   fw setup [--idf vX.Y.Z] [--prefix DIR]   install a project's IDF, toolchains, QEMU
+#   fw doctor [PROJECT]       what's installed, what the project pins, ports seen
+#   fw env [PROJECT]          the IDF exports (eval "$(fw env)")
+#   fw build [PROJECT]        set-target on a fresh tree, then idf.py build
+#   fw idf [PROJECT] -- ARGS  any idf.py command (menuconfig needs a tty)
+#   fw host-test [PROJECT]    the project's unit tests on this machine (gcc + Unity)
+#   fw qemu [PROJECT]         boot the build in Espressif's QEMU, judge the UART log
+#   fw flash [PROJECT] --port P     flash over USB or rfc2217://host:port
+#   fw monitor [PROJECT] --port P   read and judge a board's boot log
+#   fw ports                  the serial ports this sandbox can see
+#   fw bootlog LOG            judge a saved boot log
+#   fw test                   this module's own tests (the per-change test)
+#   fw check-all              build, host-test and boot every example (slow)
+#   fw score                  the share of example stages proven (the score)
+#
+# PROJECT defaults to the current directory; its fw.json pins the IDF
+# version and target (docs/README.md). Toolchains live in /hive/tools/fw
+# when a warden has put them there, else in $FW_HOME (~/.cache/fw).
+# The scripts are standard-library python, run with the Hive's python3.
+set -e
+here=$(cd "$(dirname "$0")/.." && pwd)
+py=$(command -v python3 || echo /hive/tools/python/bin/python3)
+s=$here/scripts
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+setup) exec "$py" "$s/setup.py" "$@" ;;
+env | idf | build | flash | monitor | ports | doctor) exec "$py" "$s/fwidf.py" "$cmd" "$@" ;;
+host-test) exec "$py" "$s/hosttest.py" "$@" ;;
+qemu) exec "$py" "$s/qemu.py" "$@" ;;
+bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
+check-all) exec "$py" "$s/check_all.py" "$@" ;;
+score) exec "$py" "$s/score.py" "$@" ;;
+test)
+	cd "$here"
+	exec "$py" -m unittest discover -s tests -t . "$@"
+	;;
+"" | -h | --help | help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
+*)
+	echo "fw: no command $cmd (fw help)" >&2
+	exit 2
+	;;
+esac

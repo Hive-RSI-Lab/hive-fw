@@ -1,0 +1,12 @@
+{
+  "firmware": "hello",
+  "idf": "v4.4.8",
+  "target": "esp32",
+  "inputs": "171b85d63ab89f168bc64fbd1714933f4d83ca5c60ea13fd44483f426be2a7e6",
+  "stages": {
+    "build": "pass",
+    "host-test": "pass",
+    "qemu": "pass"
+  },
+  "when": "2026-10-28T23:26:59+00:00"
+}

@@ -1,3 +1,4 @@
 {
-  "test": ""
+  "test": "bin/fw test",
+  "score": {"command": "bin/fw score", "direction": "higher", "tolerance": 0, "paths": ["scripts/score.py", "scripts/check_all.py"]}
 }
