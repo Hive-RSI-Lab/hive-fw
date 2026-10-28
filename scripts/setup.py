@@ -155,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
             if not fwlib.idf_ready(prefix, idf):
                 install_idf(prefix, idf, targets)
             log(f"ESP-IDF {idf} is ready in {prefix}")
-    if not a.no_qemu and not fwlib.find_qemu():
+    # With --prefix (a shared install) QEMU goes there too, whatever other roots have.
+    has_qemu = (prefix / f"qemu-{fwlib.QEMU['tag']}" / "qemu" / "bin" / "qemu-system-xtensa").is_file() if a.prefix else fwlib.find_qemu()
+    if not a.no_qemu and not has_qemu:
         prefix.mkdir(parents=True, exist_ok=True)
         with open(prefix / ".fw-lock", "w") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
