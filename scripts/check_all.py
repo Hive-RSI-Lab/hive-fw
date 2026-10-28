@@ -43,7 +43,7 @@ def check(name: str, keep: bool) -> dict:
     pins = fwlib.read_pins(src)
     work = Path(tempfile.mkdtemp(prefix=f"fw-check-{name}-"))
     proj = work / name
-    shutil.copytree(src, proj, ignore=shutil.ignore_patterns("build", "sdkconfig", "sdkconfig.old"))
+    shutil.copytree(src, proj, ignore=shutil.ignore_patterns("build", "build-host", "sdkconfig", "sdkconfig.old"))
     logs = work / "logs"
     logs.mkdir()
     st = {}

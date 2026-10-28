@@ -49,11 +49,13 @@ def uv() -> str:
     return u
 
 
-def find_python(minor: str) -> str:
-    """A CPython of this minor version, through uv (it downloads one into
-    uv's own folder if none is installed)."""
-    subprocess.run([uv(), "python", "install", minor], check=True, stdout=sys.stderr)
-    return subprocess.run([uv(), "python", "find", minor], check=True,
+def find_python(minor: str, prefix: Path) -> str:
+    """A CPython of this minor version, installed by uv under the prefix, so
+    the IDF's venv points at nothing outside it (a shared prefix must work
+    from every sandbox, where another HOME's uv pythons aren't)."""
+    env = dict(os.environ, UV_PYTHON_INSTALL_DIR=str(prefix / "python"))
+    subprocess.run([uv(), "python", "install", minor], env=env, check=True, stdout=sys.stderr)
+    return subprocess.run([uv(), "python", "find", "--managed-python", minor], env=env, check=True,
                           capture_output=True, text=True).stdout.strip()
 
 
@@ -106,12 +108,12 @@ def install_idf(prefix: Path, idf: str, targets: str) -> Path:
     else:  # a clone an earlier run left: finish its submodules (a no-op when done)
         subprocess.run(["git", "-C", str(src), "submodule", "update", "-q", "--init", "--recursive",
                         "--depth", "1", "--jobs", "8"], check=True, stdout=sys.stderr)
-    py = find_python(fwlib.python_for(idf))
+    py = find_python(fwlib.python_for(idf), prefix)
     env = dict(os.environ, IDF_PATH=str(src), IDF_TOOLS_PATH=str(tools))
     env.pop("VIRTUAL_ENV", None)
     it = [py, str(src / "tools" / "idf_tools.py"), "--non-interactive"]
-    log(f"installing {idf} toolchains for {targets}, cmake and ninja")
-    subprocess.run(it + ["install", f"--targets={targets}", "required", "cmake", "ninja"],
+    log(f"installing {idf} toolchains for {targets}")
+    subprocess.run(it + ["install", f"--targets={targets}", "required"],
                    env=env, check=True, stdout=sys.stderr)
     # idf_tools would make its venv with `pip install --user virtualenv`, which
     # uv's pythons refuse (PEP 668); a seeded venv at the path it looks for
@@ -123,6 +125,10 @@ def install_idf(prefix: Path, idf: str, targets: str) -> Path:
                        check=True, stdout=sys.stderr)
     log("installing the IDF's python requirements")
     subprocess.run(it + ["install-python-env"], env=env, check=True, stdout=sys.stderr)
+    # cmake and ninja as wheels in the same venv: on its PATH with the IDF, and
+    # idf_tools' own copies are only for the OSes that lack them.
+    subprocess.run([uv(), "pip", "install", "-q", "--python", str(pyenv / "bin" / "python"),
+                    "cmake>=3.16,<4", "ninja"], check=True, stdout=sys.stderr)
     (src / ".fw-ok").write_text(str(pyenv) + "\n", encoding="utf-8")
     return src
 

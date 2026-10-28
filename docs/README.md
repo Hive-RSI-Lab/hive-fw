@@ -49,6 +49,10 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
 
+Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
+(`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
+idle.
+
 ### What QEMU can and can't tell you
 
 QEMU emulates the ESP32 core, flash, PSRAM (`psram`), timers, the UART and an

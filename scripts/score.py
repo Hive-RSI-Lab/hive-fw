@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STAGES = ("build", "host-test", "qemu")
-SKIP = {"build", ".git", "__pycache__"}
+SKIP = {"build", "build-host", ".git", "__pycache__"}
 SKIP_FILES = {"sdkconfig", "sdkconfig.old", "dependencies.lock"}
 
 

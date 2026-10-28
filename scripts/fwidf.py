@@ -53,6 +53,7 @@ def need_env(project: Path):
         pins = fwlib.read_pins(project)
         raise SystemExit(die(f"ESP-IDF {pins['idf']} isn't installed: fw setup --project {project} "
                              f"(or ask a warden for it in /hive/tools/fw)"))
+    os.nice(int(os.environ.get("FW_NICE") or 10))  # builds share the machine: below interactive work
     return got
 
 

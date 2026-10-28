@@ -146,4 +146,19 @@ def idf_env(root: Path, idf: str) -> dict[str, str]:
         env[k] = v
     env["IDF_PYTHON_ENV_PATH"] = str(pyenv)
     env["PATH"] = f"{pyenv}/bin:{idf_path}/tools:{env['PATH']}"
+    # ninja runs cores+2 jobs and reads no setting for it; on a shared machine
+    # that's too many, so a ninja first on PATH caps it at FW_JOBS (default 4).
+    shim = jobs_shim(pyenv / "bin" / "ninja", int(env.get("FW_JOBS") or 4))
+    env["PATH"] = f"{shim}:{env['PATH']}"
     return env
+
+
+def jobs_shim(ninja: Path, jobs: int) -> Path:
+    d = home_root() / "shims" / f"j{jobs}"
+    f = d / "ninja"
+    body = f'#!/bin/sh\nexec "{ninja}" -j {jobs} "$@"\n'
+    if not f.is_file() or f.read_text() != body:
+        d.mkdir(parents=True, exist_ok=True)
+        f.write_text(body)
+        f.chmod(0o755)
+    return d
