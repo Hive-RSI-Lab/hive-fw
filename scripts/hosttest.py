@@ -126,7 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         ctest = cmake[:-1] + [str(Path(cmake[-1]).with_name("ctest")) if "/" in cmake[-1] else "ctest"]
         return rc or subprocess.run(ctest + ["--test-dir", str(out), "--output-on-failure"], env=env).returncode
     if (tdir / "Makefile").is_file():
-        return subprocess.run(["make", "-C", str(tdir), "test", f"FW_UNITY={UNITY}"], env=env).returncode
+        # `make test` when the Makefile has that target, else its default one.
+        has_test = re.search(r"^test\s*:", (tdir / "Makefile").read_text(errors="replace"), re.M)
+        return subprocess.run(["make", "-C", str(tdir)] + (["test"] if has_test else []) + [f"FW_UNITY={UNITY}"],
+                              env=env).returncode
     return run_simple(project, tdir, out, a.cc, a.only)
 
 

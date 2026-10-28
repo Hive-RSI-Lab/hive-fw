@@ -38,7 +38,7 @@ class Pins(unittest.TestCase):
             fwlib.read_pins(self.d)
 
     def test_python_for(self):
-        self.assertEqual(fwlib.python_for("v4.4.8"), "3.11")
+        self.assertEqual(fwlib.python_for("v4.4.8"), "3.10")
         self.assertEqual(fwlib.python_for("v5.5.6"), "3.12")
         self.assertEqual(fwlib.python_for("v6.1-rc1"), "3.12")
 

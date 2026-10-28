@@ -115,9 +115,10 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     pins = fwlib.read_pins(a.project)
     q = pins.get("qemu", {})
-    build = a.build or a.project / "build"
+    build = a.build or fwlib.qemu_build_dir(fwlib.src_dir(a.project.resolve(), pins), pins)
     if not (build / "flasher_args.json").is_file():
-        print(f"fw qemu: no {build}/flasher_args.json: build first (fw build)", file=sys.stderr)
+        print(f"fw qemu: no {build}/flasher_args.json: build first (fw build"
+              + (" --qemu" if build.name == "build-qemu" else "") + ")", file=sys.stderr)
         return 2
     image, chip = merge(build, build / "fw-flash.bin", a.flash_size or q.get("flash"))
     if a.image_only:

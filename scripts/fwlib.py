@@ -11,10 +11,12 @@ compilers, the IDF python env) and qemu-<tag>/.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 # The IDF a project gets when it pins none. squeezelite-esp32 pins v4.4.8.
@@ -47,9 +49,10 @@ def check_version(v: str) -> str:
 
 def python_for(idf: str) -> str:
     """The python minor version an IDF release's own venv is built with.
-    IDF 4.x pins packages that don't build past 3.11; 5.x and 6.x take 3.12."""
+    IDF 4.x gets 3.10: the last with wheels for the packages its projects pin
+    (squeezelite-esp32's cspot needs grpcio-tools 1.48, cp310 at newest); 5.x and 6.x take 3.12."""
     major = int(check_version(idf)[1:].split(".")[0])
-    return "3.11" if major < 5 else "3.12"
+    return "3.10" if major < 5 else "3.12"
 
 
 def home_root() -> Path:
@@ -96,8 +99,15 @@ def qemu_env(qemu: Path) -> dict[str, str]:
 def read_pins(project: Path) -> dict:
     """A project's fw.json (all keys optional):
         {"idf": "v4.4.8", "target": "esp32", "host_tests": "test/host",
-         "qemu": {"expect": "regex", "timeout": 30, "psram": "4M", "flash": "4MB"}}
-    With none, the project's own IDF pin is read from .idf-version or from a
+         "prepare": "tools/fetch.sh {src}", "src": "{project}/.fw-src",
+         "python": ["setuptools<70"],
+         "qemu": {"expect": "regex", "timeout": 30, "psram": "4M", "flash": "8MB",
+                  "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y"]}}
+    "prepare" is for firmware that is an overlay on an upstream tree (the
+    receiver's is squeezelite-esp32 plus a patch): fw build runs it in the
+    project dir to make the IDF project at "src", then builds there.
+    "python" names extra packages the build needs beside the IDF's own.
+    With no fw.json, the IDF pin is read from .idf-version or from a
     Dockerfile's IDF_CLONE_BRANCH_OR_TAG (squeezelite-esp32 pins it there)."""
     pins: dict = {}
     f = project / "fw.json"
@@ -113,6 +123,25 @@ def read_pins(project: Path) -> dict:
     return pins
 
 
+def src_dir(project: Path, pins: dict) -> Path:
+    """Where the IDF project is: the project itself, or the tree its
+    "prepare" step makes (default PROJECT/.fw-src)."""
+    if not pins.get("prepare"):
+        return project
+    return Path(expand(pins.get("src") or "{project}/.fw-src", project)).resolve()
+
+
+def expand(s: str, project: Path, src: Path | None = None) -> str:
+    return (s.replace("{project}", str(project)).replace("{home}", str(Path.home()))
+            .replace("{src}", str(src) if src else "{src}"))
+
+
+def qemu_build_dir(src: Path, pins: dict) -> Path:
+    """A firmware whose QEMU boot needs config of its own (a chip-revision
+    floor QEMU meets, say) gets a second build there; else the build itself."""
+    return src / "build-qemu" if pins.get("qemu", {}).get("sdkconfig") else src / "build"
+
+
 def detect_idf(project: Path) -> str | None:
     f = project / ".idf-version"
     if f.is_file():
@@ -125,7 +154,7 @@ def detect_idf(project: Path) -> str | None:
     return None
 
 
-def idf_env(root: Path, idf: str) -> dict[str, str]:
+def idf_env(root: Path, idf: str, extras: list[str] | None = None) -> dict[str, str]:
     """The environment export.sh would set, without sourcing a shell script:
     IDF_PATH, IDF_TOOLS_PATH, and PATH with the toolchains and the IDF venv."""
     idf_path = root / f"esp-idf-{idf}"
@@ -150,7 +179,26 @@ def idf_env(root: Path, idf: str) -> dict[str, str]:
     # that's too many, so a ninja first on PATH caps it at FW_JOBS (default 4).
     shim = jobs_shim(pyenv / "bin" / "ninja", int(env.get("FW_JOBS") or 4))
     env["PATH"] = f"{shim}:{env['PATH']}"
+    if extras:
+        d = python_extras(pyenv, extras)
+        env["PYTHONPATH"] = str(d) + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     return env
+
+
+def python_extras(pyenv: Path, reqs: list[str]) -> Path:
+    """Packages a firmware's build needs beside the IDF's (squeezelite's cspot
+    wants setuptools<70 and protobuf<4), installed once into a folder of the
+    agent's own and put first on PYTHONPATH: the IDF venv may be the shared,
+    read-only one, and what's here wins over its own copies."""
+    key = hashlib.sha256(("\0".join([str(pyenv)] + sorted(reqs))).encode()).hexdigest()[:16]
+    d = home_root() / "pyextra" / key
+    if not (d / ".fw-ok").is_file():
+        import shutil
+        uv = shutil.which("uv") or "/hive/tools/uv/bin/uv"
+        subprocess.run([uv, "pip", "install", "-q", "--python", str(pyenv / "bin" / "python"),
+                        "--target", str(d)] + reqs, check=True, stdout=sys.stderr)
+        (d / ".fw-ok").write_text("\n".join(reqs) + "\n")
+    return d
 
 
 def jobs_shim(ninja: Path, jobs: int) -> Path:

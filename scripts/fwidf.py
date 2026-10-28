@@ -18,6 +18,7 @@ from __future__ import annotations
 import glob
 import os
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -44,7 +45,7 @@ def env_for(project: Path) -> tuple[dict[str, str], dict] | None:
     root = fwlib.find_idf(pins["idf"])
     if not root:
         return None
-    return fwlib.idf_env(root, pins["idf"]), pins
+    return fwlib.idf_env(root, pins["idf"], pins.get("python")), pins
 
 
 def need_env(project: Path):
@@ -80,21 +81,60 @@ def cmd_idf(args: list[str]) -> int:
     project, rest = split_project(args)
     if rest[:1] == ["--"]:
         rest = rest[1:]
-    env, _ = need_env(project)
-    return idf_py(env, project, rest)
+    env, pins = need_env(project)
+    return idf_py(env, fwlib.src_dir(project, pins), rest)
+
+
+def prepare(project: Path, pins: dict, env: dict) -> Path:
+    """Run the project's "prepare" step, if it has one; the IDF project dir."""
+    src = fwlib.src_dir(project, pins)
+    if pins.get("prepare"):
+        cmd = fwlib.expand(pins["prepare"], project, src)
+        print(f"fw: prepare: {cmd}", file=sys.stderr, flush=True)
+        r = subprocess.run(["sh", "-c", cmd], cwd=project, env=env, stdout=sys.stderr)
+        if r.returncode:
+            raise SystemExit(die(f"prepare failed ({r.returncode}): {cmd}", r.returncode))
+    return src
+
+
+def run_idf(env: dict, src: Path, args: list[str]) -> int:
+    print("fw: " + shlex.join(["idf.py"] + args), file=sys.stderr, flush=True)
+    return subprocess.run([os.path.join(env["IDF_PYTHON_ENV_PATH"], "bin", "python"),
+                           os.path.join(env["IDF_PATH"], "tools", "idf.py"), "-C", str(src)] + args,
+                          env=env).returncode
 
 
 def cmd_build(args: list[str]) -> int:
+    """fw build [P] [--qemu] [--no-prepare] [idf.py args]: --qemu builds the
+    QEMU variant (fw.json qemu.sdkconfig lines on top of the project's
+    sdkconfig) into build-qemu/, leaving build/ for the board."""
     project, rest = split_project(args)
+    qemu = "--qemu" in rest
+    skip_prep = "--no-prepare" in rest
+    rest = [a for a in rest if a not in ("--qemu", "--no-prepare")]
     env, pins = need_env(project)
-    if not (project / "build" / "CMakeCache.txt").is_file() and not (project / "sdkconfig").is_file():
+    src = fwlib.src_dir(project, pins) if skip_prep else prepare(project, pins, env)
+    if not (src / "build" / "CMakeCache.txt").is_file() and not (src / "sdkconfig").is_file():
         # A fresh tree: pick the target first, which also writes sdkconfig from sdkconfig.defaults.
-        rc = os.spawnve(os.P_WAIT, os.path.join(env["IDF_PYTHON_ENV_PATH"], "bin", "python"),
-                        ["python", os.path.join(env["IDF_PATH"], "tools", "idf.py"), "-C", str(project),
-                         "set-target", pins["target"]], env)
+        rc = run_idf(env, src, ["set-target", pins["target"]])
         if rc:
             return rc
-    return idf_py(env, project, rest + ["build"])
+    overlay = pins.get("qemu", {}).get("sdkconfig")
+    if qemu and overlay:
+        bq = src / "build-qemu"
+        bq.mkdir(exist_ok=True)
+        base = (src / "sdkconfig").read_text(encoding="utf-8") if (src / "sdkconfig").is_file() else ""
+        names = {line.split("=", 1)[0] for line in overlay}
+        kept = [ln for ln in base.splitlines()
+                if ln.split("=", 1)[0] not in names and not any(ln == f"# {n} is not set" for n in names)]
+        want = "\n".join(kept + list(overlay)) + "\n"
+        sc, stamp = bq / "sdkconfig", bq / ".fw-overlay"
+        # IDF rewrites sdkconfig as it configures: compare what we wrote last.
+        if not sc.is_file() or not stamp.is_file() or stamp.read_text(encoding="utf-8") != want:
+            sc.write_text(want, encoding="utf-8")
+            stamp.write_text(want, encoding="utf-8")
+        return run_idf(env, src, ["-B", str(bq), "-D", f"SDKCONFIG={sc}"] + rest + ["build"])
+    return run_idf(env, src, rest + ["build"])
 
 
 def port_arg(rest: list[str]) -> tuple[str | None, list[str]]:
@@ -116,8 +156,8 @@ def cmd_flash(args: list[str]) -> int:
     port, rest = port_arg(rest)
     if not port:
         return die("no port: --port /dev/ttyUSB0 or rfc2217://host:port, or set FW_PORT (fw ports lists them)")
-    env, _ = need_env(project)
-    return idf_py(env, project, ["-p", port] + rest + ["flash"])
+    env, pins = need_env(project)
+    return idf_py(env, fwlib.src_dir(project, pins), ["-p", port] + rest + ["flash"])
 
 
 def cmd_monitor(args: list[str]) -> int:

@@ -12,7 +12,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
   ports the sandbox can see.
 - `fw setup --project PROJECT` installs the pinned IDF release: a shallow
   clone with submodules, the xtensa toolchains, cmake, ninja, the IDF python
-  env (built on a uv python: 3.11 for IDF 4.x, 3.12 for 5.x and later), and
+  env (built on a uv python: 3.10 for IDF 4.x, 3.12 for 5.x and later), and
   Espressif's QEMU with the one library it needs that the host lacks
   (libslirp, from Ubuntu's .deb, checked by sha256). It skips anything a
   root already has.
