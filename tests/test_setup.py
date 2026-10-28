@@ -32,6 +32,14 @@ class Deb(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
+    def test_entry_point_is_executable_in_git(self):
+        # A clean clone must get +x: the project's test command is `bin/fw test`.
+        r = subprocess.run(["git", "-C", str(_util.ROOT), "ls-files", "-s", "bin/fw"],
+                           capture_output=True, text=True)
+        if r.returncode or not r.stdout:
+            self.skipTest("not a git checkout")
+        self.assertTrue(r.stdout.startswith("100755"), r.stdout)
+
     def test_help_and_unknown(self):
         fw = str(_util.ROOT / "bin" / "fw")
         r = subprocess.run([fw, "help"], capture_output=True, text=True)

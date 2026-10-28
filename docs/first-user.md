@@ -78,8 +78,9 @@ Their layout, which fw fits:
 - `fw qemu`: fails, before app_main, with the same assert in IDF's
   `do_core_init` that the firmware worker saw (`esp_vfs_console_register`).
   The function only fails when `malloc` returns NULL. Under gdb it returned
-  `ESP_OK` and the boot went on, so it looks like a race at startup in
-  dual-core QEMU rather than a fault in the firmware. The `hello` example
+  `ESP_OK` and the boot went on, so it looks like something in QEMU or an
+  interrupt rather than a fault in the firmware (it isn't dual-core: a
+  single-core build fails the same way). The `hello` example
   boots the same IDF with PSRAM, dual-core, without it. More in
   [targets.json](../targets.json) and the proof (`proof/hifi-lite.json`).
 
