@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -177,8 +178,10 @@ def idf_env(root: Path, idf: str, extras: list[str] | None = None) -> dict[str, 
     env["PATH"] = f"{pyenv}/bin:{idf_path}/tools:{env['PATH']}"
     # ninja runs cores+2 jobs and reads no setting for it; on a shared machine
     # that's too many, so a ninja first on PATH caps it at FW_JOBS (default 4).
-    shim = jobs_shim(pyenv / "bin" / "ninja", int(env.get("FW_JOBS") or 4))
-    env["PATH"] = f"{shim}:{env['PATH']}"
+    ninja = shutil.which("ninja", path=env["PATH"])
+    shim = jobs_shim(Path(ninja), int(env.get("FW_JOBS") or 4)) if ninja else None
+    if shim:
+        env["PATH"] = f"{shim}:{env['PATH']}"
     if extras:
         d = python_extras(pyenv, extras)
         env["PYTHONPATH"] = str(d) + (":" + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
@@ -193,7 +196,6 @@ def python_extras(pyenv: Path, reqs: list[str]) -> Path:
     key = hashlib.sha256(("\0".join([str(pyenv)] + sorted(reqs))).encode()).hexdigest()[:16]
     d = home_root() / "pyextra" / key
     if not (d / ".fw-ok").is_file():
-        import shutil
         uv = shutil.which("uv") or "/hive/tools/uv/bin/uv"
         subprocess.run([uv, "pip", "install", "-q", "--python", str(pyenv / "bin" / "python"),
                         "--target", str(d)] + reqs, check=True, stdout=sys.stderr)
@@ -202,7 +204,7 @@ def python_extras(pyenv: Path, reqs: list[str]) -> Path:
 
 
 def jobs_shim(ninja: Path, jobs: int) -> Path:
-    d = home_root() / "shims" / f"j{jobs}"
+    d = home_root() / "shims" / f"j{jobs}-{hashlib.sha256(str(ninja).encode()).hexdigest()[:8]}"
     f = d / "ninja"
     body = f'#!/bin/sh\nexec "{ninja}" -j {jobs} "$@"\n'
     if not f.is_file() or f.read_text() != body:

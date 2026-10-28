@@ -104,6 +104,23 @@ def run_idf(env: dict, src: Path, args: list[str]) -> int:
                           env=env).returncode
 
 
+def sdkconfig_key(line: str) -> str | None:
+    """CONFIG_X for "CONFIG_X=v" and "# CONFIG_X is not set"; None for other lines."""
+    line = line.strip()
+    if line.startswith("CONFIG_") and "=" in line:
+        return line.split("=", 1)[0]
+    if line.startswith("# CONFIG_") and line.endswith(" is not set"):
+        return line[2:-len(" is not set")]
+    return None
+
+
+def overlay_sdkconfig(base: str, overlay: list[str]) -> str:
+    """base with every option the overlay names dropped, then the overlay."""
+    names = {sdkconfig_key(ln) for ln in overlay} - {None}
+    kept = [ln for ln in base.splitlines() if sdkconfig_key(ln) not in names]
+    return "\n".join(kept + list(overlay)) + "\n"
+
+
 def cmd_build(args: list[str]) -> int:
     """fw build [P] [--qemu] [--no-prepare] [idf.py args]: --qemu builds the
     QEMU variant (fw.json qemu.sdkconfig lines on top of the project's
@@ -124,10 +141,7 @@ def cmd_build(args: list[str]) -> int:
         bq = src / "build-qemu"
         bq.mkdir(exist_ok=True)
         base = (src / "sdkconfig").read_text(encoding="utf-8") if (src / "sdkconfig").is_file() else ""
-        names = {line.split("=", 1)[0] for line in overlay}
-        kept = [ln for ln in base.splitlines()
-                if ln.split("=", 1)[0] not in names and not any(ln == f"# {n} is not set" for n in names)]
-        want = "\n".join(kept + list(overlay)) + "\n"
+        want = overlay_sdkconfig(base, overlay)
         sc, stamp = bq / "sdkconfig", bq / ".fw-overlay"
         # IDF rewrites sdkconfig as it configures: compare what we wrote last.
         if not sc.is_file() or not stamp.is_file() or stamp.read_text(encoding="utf-8") != want:

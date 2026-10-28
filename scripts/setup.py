@@ -112,9 +112,13 @@ def install_idf(prefix: Path, idf: str, targets: str) -> Path:
     env = dict(os.environ, IDF_PATH=str(src), IDF_TOOLS_PATH=str(tools))
     env.pop("VIRTUAL_ENV", None)
     it = [py, str(src / "tools" / "idf_tools.py"), "--non-interactive"]
-    log(f"installing {idf} toolchains for {targets}")
+    log(f"installing {idf} toolchains for {targets}, cmake and ninja")
     subprocess.run(it + ["install", f"--targets={targets}", "required"],
                    env=env, check=True, stdout=sys.stderr)
+    # On Linux idf_tools leaves cmake and ninja to the OS unless named, and
+    # names with "required" install only the required ones; the IDF's own
+    # pins matter (cmake 3.31 orders IDF 4.4's -std flags so C++20 code fails).
+    subprocess.run(it + ["install", "cmake", "ninja"], env=env, check=True, stdout=sys.stderr)
     # idf_tools would make its venv with `pip install --user virtualenv`, which
     # uv's pythons refuse (PEP 668); a seeded venv at the path it looks for
     # is taken as is, and it installs the IDF's requirements into it.
@@ -125,10 +129,6 @@ def install_idf(prefix: Path, idf: str, targets: str) -> Path:
                        check=True, stdout=sys.stderr)
     log("installing the IDF's python requirements")
     subprocess.run(it + ["install-python-env"], env=env, check=True, stdout=sys.stderr)
-    # cmake and ninja as wheels in the same venv: on its PATH with the IDF, and
-    # idf_tools' own copies are only for the OSes that lack them.
-    subprocess.run([uv(), "pip", "install", "-q", "--python", str(pyenv / "bin" / "python"),
-                    "cmake>=3.16,<4", "ninja"], check=True, stdout=sys.stderr)
     (src / ".fw-ok").write_text(str(pyenv) + "\n", encoding="utf-8")
     return src
 

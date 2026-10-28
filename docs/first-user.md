@@ -44,11 +44,60 @@ Their layout, which fw fits:
 ## What fw changed because of it
 
 - ESP-IDF v4.4.8's `install-python-env` creates its venv with
-  `pip install --user virtualenv`. The uv-managed Python fw uses refuses that
-  (PEP 668), so `fw setup` makes the venv itself, at the path idf_tools
-  looks for.
-- idf_tools doesn't install cmake or ninja on Linux. `fw setup` puts them in
-  the IDF's venv as wheels.
+  `pip install --user virtualenv`. uv's pythons refuse that (PEP 668), so
+  `fw setup` makes the venv itself, at the path idf_tools looks for.
+- IDF 4.x gets Python 3.10, not 3.11. squeezelite's cspot needs
+  grpcio-tools 1.48 with protobuf below 4, and 1.48 has no wheel for 3.11;
+  building it from source fails.
+- idf_tools installs cmake and ninja on Linux only when they are named, and
+  naming them with `required` installs only the required tools. `fw setup`
+  names them separately, which gets IDF's own cmake 3.23.1. A cmake 3.31
+  wheel (fw's first try) orders IDF 4.4's flags so that `-std=gnu++11` comes
+  after cspot's `-std=gnu++2a`, and the C++20 code then fails to compile
+  (`std::endian`).
+- squeezelite's other needs became `fw.json` keys rather than steps in the
+  firmware's own scripts:
+  - `python`, for cspot's nanopb generator: `setuptools<70`,
+    `protobuf>=3.20,<4`, `grpcio-tools>=1.48,<1.49`;
+  - `prepare`, for its `fetch.sh`, which also copies the board's sdkconfig
+    as upstream's CI does;
+  - `qemu.sdkconfig`, for `CONFIG_ESP32_REV_MIN_0` in a separate
+    `build-qemu/`, while the board keeps rev 1 for the PSRAM cache fix.
+- The receiver's host tests are a Makefile with no `test` target, so
+  `fw host-test` runs a Makefile's default target when it has no `test`.
 - QEMU needs `libslirp.so.0`, which the host doesn't have. `fw setup` takes
   the library from Ubuntu's .deb, checked by sha256, and keeps it beside
   QEMU.
+
+## Where the receiver's firmware stands in fw (10-28)
+
+- `fw host-test`: passes, 4 suites.
+- `fw build`: passes, through the `prepare` step. `squeezelite.bin` is
+  2.69 MB and `recovery.bin` 1.38 MB.
+- `fw build --qemu`: passes.
+- `fw qemu`: fails, before app_main, with the same assert in IDF's
+  `do_core_init` that the firmware worker saw (`esp_vfs_console_register`).
+  The function only fails when `malloc` returns NULL. Under gdb it returned
+  `ESP_OK` and the boot went on, so it looks like a race at startup in
+  dual-core QEMU rather than a fault in the firmware. The `hello` example
+  boots the same IDF with PSRAM, dual-core, without it. More in
+  [targets.json](../targets.json) and the proof (`proof/hifi-lite.json`).
+
+What was tried on the QEMU assert, none of which fixed it:
+
+- single core (`CONFIG_FREERTOS_UNICORE`);
+- the brownout detector off.
+
+An `-O2` build couldn't be tried as an overlay: squeezelite's sdkconfig
+carries the deprecated alias `CONFIG_OPTIMIZATION_LEVEL_RELEASE`, which
+puts SIZE back. The overlay has to name a deprecated alias too, and IDF's
+`sdkconfig.rename` files list them all.
+
+Under gdb with hardware breakpoints:
+
+- both `malloc`s in `esp_vfs_register_common` return memory;
+- `a10` is 0 at the `beqz` before the assert;
+- the assert still fires on a free run.
+
+This points at QEMU or an interrupt rather than the firmware. The follow-up
+brief on hive-fw has the details.

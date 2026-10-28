@@ -19,8 +19,8 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
   - The roots are searched in this order: `$FW_TOOLS`, `/hive/tools/fw` (the
     Hive's shared folder, read-only to you), then `$FW_HOME` (default
     `~/.cache/fw`).
-  - Without a shared copy, setup installs into your HOME. ESP-IDF v4.4.8 took
-    about N minutes and ~X GB there (see the table below).
+  - Without a shared copy, setup installs into your HOME. ESP-IDF v4.4.8
+    took about 15 minutes and 2 GB there on a loaded machine.
   - A version every agent needs belongs in `/hive/tools/fw`. Ask a warden
     (T1) to run `python3 scripts/setup.py --idf vX.Y.Z --prefix /hive/tools/fw`
     from this module.
@@ -31,6 +31,21 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
    "qemu": {"expect": "my_app: ready", "timeout": 60, "settle": 3, "psram": "4M", "flash": "8MB"}}
   ```
 
+  Firmware that is an overlay on an upstream tree, like the hifi receiver's
+  (squeezelite-esp32 plus a patch and a component), adds these keys:
+  - `"prepare": "sh tools/fetch.sh {src}"` runs before each build, in the
+    project dir, and makes the IDF project at `"src"` (default
+    `{project}/.fw-src`; `{home}` works too).
+  - `"python": ["setuptools<70", "protobuf>=3.20,<4"]` lists packages the
+    build needs beside the IDF's own. They're installed once into
+    `~/.cache/fw/pyextra/` and put first on `PYTHONPATH`, so they work even
+    when the IDF venv is the shared, read-only one.
+  - `"qemu": {"sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", ...]}` holds config
+    lines for QEMU only, because QEMU emulates a revision-0 chip.
+    `fw build --qemu` lays them over the project's sdkconfig in a second
+    build dir, `build-qemu/`, so `build/` stays the board's. `fw qemu` boots
+    `build-qemu/` when these lines exist.
+
   With no `fw.json`, fw reads the IDF version from `.idf-version` or from a
   Dockerfile's `IDF_CLONE_BRANCH_OR_TAG`, which is how squeezelite-esp32
   pins v4.4.8. Otherwise it uses `v5.5.6`.
@@ -39,10 +54,10 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 
 | command | what it does |
 |---|---|
-| `fw build [P]` | `idf.py set-target <target>` on a fresh tree, then `idf.py build`. The IDF's environment is computed from `idf_tools.py export`, without sourcing `export.sh`. |
+| `fw build [P] [--qemu] [--no-prepare]` | Runs `prepare`, then `idf.py set-target <target>` on a fresh tree, then `idf.py build`. The IDF's environment is computed from `idf_tools.py export`, without sourcing `export.sh`. |
 | `fw idf [P] -- ARGS` | Any `idf.py` command with the right environment: `size-components`, `fullclean`, `-D SDKCONFIG_DEFAULTS=... reconfigure`. |
 | `eval "$(fw env [P])"` | Puts `IDF_PATH`, `PATH` and `FW_QEMU` in your shell, for scripts of your own. |
-| `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test FW_UNITY=...`), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. |
+| `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. |
 | `fw qemu [P]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. The log goes to `build/fw-qemu.log`. |
 | `fw flash [P] --port PORT` | `idf.py -p PORT flash`. `PORT` is `/dev/ttyUSB0` for a board on this machine, or `rfc2217://host:4000` for a board elsewhere. `FW_PORT` sets a default. |
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
@@ -87,18 +102,32 @@ work on.
   lookup, the host-test runner against `examples/hello`, the setup helpers
   and the CLI. It also checks that every example has a proof made on its
   current files (below).
-- **Examples**, `bin/fw check-all`, not the per-change test. It copies each
-  `examples/<name>/` to a scratch dir and runs `fw build`, `fw host-test` and
-  `fw qemu` there. Then it writes `proof/<name>.json`: each stage's verdict,
-  the IDF version and a hash of the example's files. It needs the example's
-  IDF (`fw setup`). Run it after you change an example or the scripts it
-  exercises, then commit `proof/`.
-- **Score**, `bin/fw score`, higher is better. It is the share of example
-  stages (build, host-test, qemu) that a current proof shows passing, as a
-  percentage. A stale proof counts nothing. It reads files only. To raise
-  it: add an example that proves something new (another IDF version,
-  another chip, a feature real firmware needs, such as PSRAM, NVS, OTA
-  partitions or an 8 MB flash), then make it pass.
+- **Proofs**, `bin/fw check-all [NAME] [--from DIR]`. This is not the
+  per-change test. It covers every firmware fw serves:
+  - `examples/<name>/`, this module's own examples;
+  - the real products in [targets.json](../targets.json), read from
+    `$HIVE_PROJECTS`. The first is `hifi-lite`, the receiver's Lite
+    firmware in hifi-receiver-2's `firmware/`.
+
+  `--from DIR` checks one target from another place, such as a branch that
+  hasn't merged. Each firmware is copied to a work dir and run through
+  `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
+  it has QEMU-only config). A target's pins in targets.json fill in what its
+  own `fw.json` lacks, and its IDF tree is kept in
+  `~/.cache/fw/check/<name>/` so later runs rebuild incrementally.
+
+  check-all writes `proof/<name>.json`: each stage's verdict, the IDF
+  version and a hash of the firmware's files. Run it after you change what a
+  firmware exercises, then commit `proof/`.
+- **Score**, `bin/fw score`, higher is better. It is the share of stages
+  (build, host-test, qemu, for every example and target) that a current
+  proof shows passing, as a percentage. A stale proof counts nothing. A
+  target whose files this machine can't see is judged on its proof alone.
+  It reads files only. To raise it:
+  - make a failing stage of the real product pass;
+  - add the next real firmware to targets.json;
+  - add an example that proves something new: another IDF version, another
+    chip, or a feature real firmware needs.
 
 ## Be critical of the tools
 
