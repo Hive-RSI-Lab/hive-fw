@@ -101,7 +101,7 @@ def read_pins(project: Path) -> dict:
     """A project's fw.json (all keys optional):
         {"idf": "v4.4.8", "target": "esp32", "host_tests": "test/host",
          "prepare": "tools/fetch.sh {src}", "src": "{project}/.fw-src",
-         "python": ["setuptools<70"],
+         "python": ["setuptools<70"], "env": {"HIFI_BOARD": "core"},
          "qemu": {"expect": "regex", "timeout": 30, "psram": "4M", "flash": "8MB",
                   "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y"], "eth": "emac",
                   "http": [{"get": "/api/v1/info", "expect": "regex"}]}}
@@ -109,6 +109,8 @@ def read_pins(project: Path) -> dict:
     receiver's is squeezelite-esp32 plus a patch): fw build runs it in the
     project dir to make the IDF project at "src", then builds there.
     "python" names extra packages the build needs beside the IDF's own.
+    "env" is variables every step gets (prepare, idf.py, host tests): one
+    tree that builds several boards picks its board there.
     With no fw.json, the IDF pin is read from .idf-version or from a
     Dockerfile's IDF_CLONE_BRANCH_OR_TAG (squeezelite-esp32 pins it there)."""
     pins: dict = {}
@@ -122,6 +124,11 @@ def read_pins(project: Path) -> dict:
     pins.setdefault("idf", DEFAULT_IDF)
     pins.setdefault("target", DEFAULT_TARGET)
     check_version(pins["idf"])
+    env = pins.get("env", {})
+    if not isinstance(env, dict) or not all(
+            isinstance(k, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) and isinstance(v, str)
+            for k, v in env.items()):
+        raise ValueError(f"env: names to string values, not {env!r}")
     return pins
 
 

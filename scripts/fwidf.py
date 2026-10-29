@@ -47,7 +47,9 @@ def env_for(project: Path) -> tuple[dict[str, str], dict] | None:
     root = fwlib.find_idf(pins["idf"])
     if not root:
         return None
-    return fwlib.idf_env(root, pins["idf"], pins.get("python")), pins
+    env = fwlib.idf_env(root, pins["idf"], pins.get("python"))
+    env.update(pins.get("env", {}))
+    return env, pins
 
 
 def need_env(project: Path):

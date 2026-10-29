@@ -37,6 +37,14 @@ class Pins(unittest.TestCase):
         with self.assertRaises(ValueError):
             fwlib.read_pins(self.d)
 
+    def test_env_pin(self):
+        (self.d / "fw.json").write_text(json.dumps({"env": {"HIFI_BOARD": "core"}}))
+        self.assertEqual(fwlib.read_pins(self.d)["env"], {"HIFI_BOARD": "core"})
+        for bad in (["HIFI_BOARD=core"], {"HIFI_BOARD": 1}, {"A B": "x"}):
+            (self.d / "fw.json").write_text(json.dumps({"env": bad}))
+            with self.assertRaises(ValueError):
+                fwlib.read_pins(self.d)
+
     def test_python_for(self):
         self.assertEqual(fwlib.python_for("v4.4.8"), "3.10")
         self.assertEqual(fwlib.python_for("v5.5.6"), "3.12")
