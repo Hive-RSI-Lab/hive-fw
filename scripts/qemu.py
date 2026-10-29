@@ -2,6 +2,7 @@
 
     fw qemu [PROJECT] [--build DIR] [--expect REGEX] [--timeout S] [--settle S]
             [--psram 4M] [--log FILE] [--image-only]
+            [--http 'METHOD /path [body]' ...] [--http-port N] [--hold S]
 
 Reads the build's flasher_args.json, lays every binary at its offset in one
 flash image (merge(): no esptool needed), boots it on the `esp32` machine
@@ -11,17 +12,34 @@ seconds; it fails at the first fatal line (bootlog.FATAL) or at --timeout.
 Defaults come from the project's fw.json "qemu" block. There's no Wi-Fi or
 I2S codec in QEMU: firmware that waits on them should still reach app_main
 and stay up; give --expect a line your own code logs to go further.
+
+QEMU does emulate an Ethernet MAC (open_eth), on user networking. With
+fw.json "qemu": {"http": [{"get": "/api/v1/info", "expect": "regex"}, ...]}
+(or --http 'GET /path', 'POST /path {json}'), port 80 of the guest
+("http_port") is forwarded to a free port on 127.0.0.1, and once the expect
+line shows, each request is made in order: the run fails on a wrong status
+(default 200) or a reply that doesn't match. Requests and replies are added
+to the log. --hold S keeps a passing run up for requests of your own.
+Firmware that brings Ethernet up through the ESP32 EMAC gets open_eth from
+"eth": "emac" (fw build --qemu; qemu/openeth.c).
 """
 from __future__ import annotations
 
 import argparse
+import csv
+import http.client
+import io
 import json
 import os
 import re
 import selectors
+import socket
+import struct
 import subprocess
 import sys
+import threading
 import time
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,8 +50,86 @@ SIZES = {"1MB": 1, "2MB": 2, "4MB": 4, "8MB": 8, "16MB": 16}
 MACHINES = {"esp32": "esp32", "esp32s3": "esp32s3"}
 
 
-def merge(build: Path, out: Path, flash_size: str | None = None) -> tuple[Path, str]:
-    """One flash image from build/flasher_args.json; returns it and the chip."""
+def partitions(build: Path) -> dict[str, tuple[int, int, int, int]]:
+    """name -> (type, subtype, offset, size) from the build's binary
+    partition table (32-byte entries: magic 0x50AA, type, subtype, offset,
+    size, name)."""
+    t = (build / "partition_table" / "partition-table.bin").read_bytes()
+    out = {}
+    for i in range(0, len(t) - 31, 32):
+        magic, typ, sub, off, size = struct.unpack_from("<HBBII", t, i)
+        if magic != 0x50AA:
+            break
+        out[t[i + 12:i + 28].split(b"\0")[0].decode(errors="replace")] = (typ, sub, off, size)
+    return out
+
+
+def otadata(parts: dict, boot: str) -> list[tuple[int, bytes]]:
+    """fw.json "qemu": {"boot": "ota_0"}: otadata that has the bootloader
+    start that OTA app instead of the factory one (squeezelite's factory app
+    is its recovery). One select entry, as IDF writes it: ota_seq N+1 for
+    slot N, its CRC (crc32_le from all-ones, which is zlib's), state unset."""
+    if boot not in parts:
+        raise ValueError(f"qemu.boot: no partition {boot!r} (the table has {', '.join(parts)})")
+    typ, sub = parts[boot][:2]
+    if typ != 0 or not 0x10 <= sub < 0x20:
+        raise ValueError(f"qemu.boot: {boot} isn't an OTA app partition")
+    od = [p for p in parts.values() if p[:2] == (1, 0)]
+    if not od:
+        raise ValueError("qemu.boot: the partition table has no otadata")
+    seq = sub - 0x10 + 1
+    entry = struct.pack("<I20sII", seq, b"\xff" * 20, 0xFFFFFFFF, zlib.crc32(struct.pack("<I", seq), 0xFFFFFFFF))
+    return [(od[0][2], entry)]
+
+
+def nvs_csv(namespaces: dict) -> str:
+    """fw.json qemu.nvs's {namespace: {key: value}} for one partition, as
+    nvs_partition_gen.py's CSV: a string is a string, a whole number an i32."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["key", "type", "encoding", "value"])
+    for ns, kv in namespaces.items():
+        w.writerow([ns, "namespace", "", ""])
+        for k, v in kv.items():
+            if isinstance(v, bool) or not isinstance(v, (str, int)):
+                raise ValueError(f"qemu.nvs {ns}.{k}: a string or a whole number, not {v!r}")
+            w.writerow([k, "data", "string" if isinstance(v, str) else "i32", v])
+    return buf.getvalue()
+
+
+def nvs_images(build: Path, pins: dict) -> list[tuple[int, bytes]]:
+    """fw.json "qemu": {"nvs": {"partition": {"namespace": {"key": value}}}}:
+    settings the firmware finds in flash on its first boot (squeezelite's
+    eth_config, Wi-Fi credentials...), made with the IDF's own
+    nvs_partition_gen.py and laid over the partition. Each boot starts from
+    them: the image is rebuilt every run."""
+    spec = pins.get("qemu", {}).get("nvs")
+    if not spec:
+        return []
+    parts = partitions(build)
+    root = fwlib.find_idf(pins["idf"])
+    if not root:
+        raise RuntimeError(f"qemu.nvs needs ESP-IDF {pins['idf']} (fw setup)")
+    idf = root / f"esp-idf-{pins['idf']}"
+    py = Path((idf / ".fw-ok").read_text(encoding="utf-8").strip()) / "bin" / "python"
+    gen = idf / "components" / "nvs_flash" / "nvs_partition_generator" / "nvs_partition_gen.py"
+    out = []
+    for name, namespaces in spec.items():
+        if name not in parts:
+            raise RuntimeError(f"qemu.nvs: no partition {name!r} (the table has {', '.join(parts)})")
+        off, size = parts[name][2:]
+        c, b = build / f"fw-nvs-{name}.csv", build / f"fw-nvs-{name}.bin"
+        c.write_text(nvs_csv(namespaces), encoding="utf-8")
+        subprocess.run([str(py), str(gen), "generate", str(c), str(b), hex(size)], check=True,
+                       stdout=subprocess.DEVNULL, env=dict(os.environ, PYTHONPATH=""))
+        out.append((off, b.read_bytes()))
+    return out
+
+
+def merge(build: Path, out: Path, flash_size: str | None = None,
+          extra: list[tuple[int, bytes]] | None = None) -> tuple[Path, str]:
+    """One flash image from build/flasher_args.json, with extra (offset,
+    data) laid on top; returns it and the chip."""
     fa = json.loads((build / "flasher_args.json").read_text(encoding="utf-8"))
     size = flash_size or fa.get("flash_settings", {}).get("flash_size", "4MB")
     if size not in SIZES:
@@ -45,19 +141,119 @@ def merge(build: Path, out: Path, flash_size: str | None = None) -> tuple[Path, 
         if o + len(data) > len(img):
             raise ValueError(f"{name} at {off} doesn't fit a {size} flash")
         img[o:o + len(data)] = data
+    for o, data in extra or []:
+        if o + len(data) > len(img):
+            raise ValueError(f"{len(data)} bytes at {o:#x} don't fit a {size} flash")
+        img[o:o + len(data)] = data
     out.write_bytes(bytes(img))
     chip = fa.get("extra_esptool_args", {}).get("chip", "esp32")
     return out, chip
 
 
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def parse_probe(spec: dict | str) -> dict:
+    """One HTTP probe: {"get": "/path"} or {"post": "/path", "json": {...}}
+    (or "body": "text"), with optional "status" (default 200) and "expect"
+    (a regex the reply body must match). A string is the CLI's form:
+    "GET /path" or "POST /path {json}"."""
+    if isinstance(spec, str):
+        parts = spec.split(None, 2)
+        if len(parts) < 2:
+            raise ValueError(f"http probe {spec!r}: want 'METHOD /path [body]'")
+        spec = {parts[0].lower(): parts[1]}
+        if len(parts) == 3:
+            spec["body"] = parts[2]
+    methods = [m for m in ("get", "post", "put", "delete") if m in spec]
+    if len(methods) != 1 or not str(spec[methods[0]]).startswith("/"):
+        raise ValueError(f"http probe {spec!r}: want one of get/post/put/delete with a /path")
+    body = spec.get("body")
+    if "json" in spec:
+        body = json.dumps(spec["json"])
+    if spec.get("expect"):
+        re.compile(spec["expect"])
+    return {"method": methods[0].upper(), "path": spec[methods[0]],
+            "body": body.encode() if isinstance(body, str) else None,
+            "status": int(spec.get("status", 200)), "expect": spec.get("expect")}
+
+
+def request(port: int, p: dict, timeout: float = 10) -> tuple[int, str]:
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        hdrs = {"Content-Type": "application/json"} if p["body"] is not None else {}
+        c.request(p["method"], p["path"], body=p["body"], headers=hdrs)
+        r = c.getresponse()
+        return r.status, r.read().decode(errors="replace")
+    finally:
+        c.close()
+
+
+class Prober(threading.Thread):
+    """Runs the probes in order against the forwarded port, while the main
+    loop keeps reading (and judging) the UART. It waits for the first to get
+    any answer (DHCP and the server take a while after the expect line),
+    then gives each one try. self.result: None while running, else a Verdict."""
+
+    def __init__(self, port: int, probes: list[dict], deadline: float):
+        super().__init__(daemon=True)
+        self.port, self.probes, self.deadline = port, probes, deadline
+        self.lines: list[str] = []
+        self.result: bootlog.Verdict | None = None
+
+    def run(self) -> None:
+        try:
+            self.result = self._run()
+        except Exception as e:  # a probe must end the run, not hang it
+            self.result = bootlog.Verdict(False, f"http: {e}", True)
+
+    def _run(self) -> bootlog.Verdict:
+        first = self.probes[0]
+        while True:
+            try:
+                got = request(self.port, first, timeout=5)
+                break
+            except (OSError, http.client.HTTPException) as e:
+                if time.monotonic() > self.deadline:
+                    return bootlog.Verdict(False, f"http: no answer on port {self.port} ({e})", True)
+                time.sleep(1)
+        for i, p in enumerate(self.probes):
+            if i:
+                try:
+                    got = request(self.port, p)
+                except (OSError, http.client.HTTPException) as e:
+                    got = (0, f"({e})")
+            status, body = got
+            what = f"{p['method']} {p['path']}"
+            bad = (f"status {status}, want {p['status']}" if status != p["status"] else
+                   f"reply doesn't match /{p['expect']}/" if p["expect"] and not re.search(p["expect"], body) else "")
+            self.lines.append(f"{what} -> {status} {'FAIL: ' + bad if bad else 'ok'}\n  {body.strip()[:2000]}")
+            if bad:
+                return bootlog.Verdict(False, f"http: {what}: {bad}: {body.strip()[:200]}", True)
+        return bootlog.Verdict(True, f"http: {len(self.probes)} request(s) answered as expected", True)
+
+
 def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle: float,
-        psram: str | None, log_path: Path | None) -> bootlog.Verdict:
+        psram: str | None, log_path: Path | None, http_probes: list[dict] | None = None,
+        guest_port: int = 80, host_port: int | None = None, hold: float = 0) -> bootlog.Verdict:
+    """Boot and judge. With http_probes (parse_probe's) or hold, the guest's
+    guest_port is forwarded to 127.0.0.1:host_port over QEMU's open_eth
+    (user networking: the guest gets 10.0.2.15 by DHCP), and the probes run
+    once the expect line shows. hold keeps a passing run up that many more
+    seconds, for requests of your own."""
     if chip not in MACHINES:
         return bootlog.Verdict(False, f"no QEMU machine for {chip} (esp32, esp32s3 only)", False)
+    nic = "user,model=open_eth"
+    if http_probes or hold:
+        host_port = host_port or free_port()
+        nic += f",hostfwd=tcp:127.0.0.1:{host_port}-:{guest_port}"
     cmd = [str(qemu), "-nographic", "-no-reboot", "-machine", MACHINES[chip],
            "-drive", f"file={image},if=mtd,format=raw",
            "-global", f"driver=timer.{chip}.timg,property=wdt_disable,value=true",
-           "-nic", "user,model=open_eth"]
+           "-nic", nic]
     if psram:
         cmd += ["-m", psram]
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -67,16 +263,28 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
     buf = b""
     start = time.monotonic()
     reached_at = None
+    prober: Prober | None = None
+    held = False
     v = bootlog.Verdict(False, "timed out", False)
     try:
         while True:
             now = time.monotonic()
-            if now - start > timeout:
+            if now - start > timeout and not held:
                 v = bootlog.judge(buf.decode(errors="replace"), expect)
                 if not v.ok:
                     v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s: {v.reason}", False)
+                elif prober and prober.result is None:
+                    v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s waiting on the HTTP requests", True)
                 break
-            if reached_at is not None and now - reached_at >= settle:
+            if prober and prober.result is not None and not prober.result.ok:
+                v = prober.result
+                break
+            if reached_at is not None and now - reached_at >= settle and (prober is None or prober.result):
+                if hold and not held:
+                    held, reached_at = True, now + hold - settle
+                    print(f"fw qemu: up; http://127.0.0.1:{host_port}/ reaches the firmware's port "
+                          f"{guest_port} for {hold:.0f}s", flush=True)
+                    continue
                 break
             if sel.select(timeout=0.2):
                 chunk = os.read(p.stdout.fileno(), 65536)
@@ -91,13 +299,21 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
                     break
                 if v.ok and reached_at is None:
                     reached_at = time.monotonic()
+                    if http_probes:
+                        prober = Prober(host_port, http_probes, start + timeout)
+                        prober.start()
     finally:
         p.kill()
         p.wait()
         if log_path:
-            log_path.write_bytes(buf)
+            extra = b""
+            if prober and prober.lines:
+                extra = ("\n--- fw qemu: HTTP over open_eth ---\n" + "\n".join(prober.lines) + "\n").encode()
+            log_path.write_bytes(buf + extra)
     if reached_at is not None and v.ok:
         v = bootlog.judge(buf.decode(errors="replace"), expect)
+        if v.ok and prober and prober.result:
+            v = bootlog.Verdict(True, f"{v.reason}; {prober.result.reason}", True)
     return v
 
 
@@ -111,6 +327,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--psram")
     ap.add_argument("--flash-size")
     ap.add_argument("--log", type=Path)
+    ap.add_argument("--http", action="append", metavar="'METHOD /path [body]'",
+                    help="a request to make once booted, in place of fw.json's qemu.http (repeat it)")
+    ap.add_argument("--http-port", type=int, help="the host port to forward (default: a free one)")
+    ap.add_argument("--hold", type=float, default=0, metavar="S",
+                    help="keep a passing run up S more seconds, its port forwarded, for requests of your own")
     ap.add_argument("--image-only", action="store_true", help="write build/fw-flash.bin and stop")
     a = ap.parse_args(argv)
     pins = fwlib.read_pins(a.project)
@@ -120,7 +341,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fw qemu: no {build}/flasher_args.json: build first (fw build"
               + (" --qemu" if build.name == "build-qemu" else "") + ")", file=sys.stderr)
         return 2
-    image, chip = merge(build, build / "fw-flash.bin", a.flash_size or q.get("flash"))
+    try:
+        image, chip = merge(build, build / "fw-flash.bin", a.flash_size or q.get("flash"),
+                            nvs_images(build, pins)
+                            + (otadata(partitions(build), q["boot"]) if q.get("boot") else []))
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
+        print(f"fw qemu: {e}", file=sys.stderr)
+        return 2
     if a.image_only:
         print(image)
         return 0
@@ -130,10 +357,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     expect = a.expect or q.get("expect") or bootlog.DEFAULT_EXPECT
     re.compile(expect)
+    try:
+        probes = [parse_probe(x) for x in (a.http or q.get("http") or [])]
+    except (ValueError, re.error) as e:
+        print(f"fw qemu: {e}", file=sys.stderr)
+        return 2
+    log = a.log or build / "fw-qemu.log"
     v = run(qemu, image, chip, expect, a.timeout or q.get("timeout", 30),
             a.settle if a.settle is not None else q.get("settle", 3),
-            a.psram or q.get("psram"), a.log or build / "fw-qemu.log")
-    print(f"fw qemu: {v}  (log: {a.log or build / 'fw-qemu.log'})")
+            a.psram or q.get("psram"), log, probes, int(q.get("http_port", 80)), a.http_port, a.hold)
+    if a.http and log.is_file():  # asked by hand: show the replies
+        t = log.read_text(errors="replace")
+        i = t.find("--- fw qemu: HTTP")
+        if i >= 0:
+            print(t[i:].rstrip())
+    print(f"fw qemu: {v}  (log: {log})")
     return 0 if v.ok else 1
 
 

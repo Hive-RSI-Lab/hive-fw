@@ -8,6 +8,7 @@
 #   fw idf [PROJECT] -- ARGS  any idf.py command (menuconfig needs a tty)
 #   fw host-test [PROJECT]    the project's unit tests on this machine (gcc + Unity)
 #   fw qemu [PROJECT]         boot the build in Espressif's QEMU, judge the UART log
+#                             (and its HTTP replies, over QEMU's open_eth)
 #   fw flash [PROJECT] --port P     flash over USB or rfc2217://host:port
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw ports                  the serial ports this sandbox can see

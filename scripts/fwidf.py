@@ -16,8 +16,10 @@ board, so an agent flashes a board on another machine with no USB here.
 from __future__ import annotations
 
 import glob
+import hashlib
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -158,10 +160,35 @@ def cmd_build(args: list[str]) -> int:
         rc = run_idf(env, src, ["set-target", pins["target"]])
         if rc:
             return rc
-    overlay = pins.get("qemu", {}).get("sdkconfig")
-    if qemu and overlay:
+    q = pins.get("qemu", {})
+    if qemu and fwlib.qemu_variant(pins):
         bq = src / "build-qemu"
         bq.mkdir(exist_ok=True)
+        overlay = list(q.get("sdkconfig") or [])
+        shims = []  # (source, wraps, defines)
+        if q.get("eth"):
+            if q["eth"] != "emac" or pins["target"] != "esp32":
+                return die(f"qemu.eth: only \"emac\" on esp32 (QEMU's open_eth), not {q['eth']!r} on {pins['target']}")
+            overlay += fwlib.OPENETH_SDKCONFIG
+            shims.append((fwlib.OPENETH_SHIM, fwlib.OPENETH_WRAPS, []))
+        if "adc1" in q:
+            try:
+                raw = fwlib.adc1_raw(q["adc1"])
+            except ValueError as e:
+                return die(str(e))
+            shims.append((fwlib.ADC_SHIM, ["adc1_get_raw"], ["-DFW_ADC1_RAW=" + ",".join(map(str, raw))]))
+        if q.get("wifi"):
+            if q["wifi"] != "off":
+                return die(f"qemu.wifi: only \"off\" (QEMU has no radio), not {q['wifi']!r}")
+            shims.append((fwlib.NOWIFI_SHIM, fwlib.NOWIFI_WRAPS, []))
+        link = []
+        if shims:
+            objs = [compile_shim(env, bq, pins, src_c, defs) for src_c, _, defs in shims]
+            link = ["-D", "CMAKE_EXE_LINKER_FLAGS=" + " ".join(
+                [f"-Wl,--wrap={w}" for _, wraps, _ in shims for w in wraps] + [str(o) for o in objs]),
+                    # cmake's compiler checks link with those flags too, where nothing
+                    # defines what the shims call: let them build a static library instead.
+                    "-D", "CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"]
         base = (src / "sdkconfig").read_text(encoding="utf-8") if (src / "sdkconfig").is_file() else ""
         want = overlay_sdkconfig(base, overlay, sdkconfig_renames(Path(env["IDF_PATH"]), src))
         sc, stamp = bq / "sdkconfig", bq / ".fw-overlay"
@@ -169,8 +196,24 @@ def cmd_build(args: list[str]) -> int:
         if not sc.is_file() or not stamp.is_file() or stamp.read_text(encoding="utf-8") != want:
             sc.write_text(want, encoding="utf-8")
             stamp.write_text(want, encoding="utf-8")
-        return run_idf(env, src, ["-B", str(bq), "-D", f"SDKCONFIG={sc}"] + rest + ["build"])
+        return run_idf(env, src, ["-B", str(bq), "-D", f"SDKCONFIG={sc}"] + link + rest + ["build"])
     return run_idf(env, src, rest + ["build"])
+
+
+def compile_shim(env: dict, bq: Path, pins: dict, src: Path, defines: list[str]) -> Path:
+    """A qemu/*.c shim compiled with the project's own compiler into
+    build-qemu/. The object's name carries a hash of its source and flags, so
+    a change shows in the link flags and cmake relinks."""
+    flags = ["-c", "-Os", "-mlongcalls", f"-DFW_IDF_MAJOR={fwlib.idf_major(pins['idf'])}"] + defines
+    key = hashlib.sha256(src.read_bytes() + "\0".join(flags).encode()).hexdigest()[:10]
+    obj = bq / f"fw-{src.stem}-{key}.o"
+    if obj.is_file():
+        return obj
+    cc = shutil.which(f"xtensa-{pins['target']}-elf-gcc", path=env["PATH"])
+    if not cc:
+        raise SystemExit(die(f"no xtensa-{pins['target']}-elf-gcc on the IDF's PATH"))
+    subprocess.run([cc] + flags + [str(src), "-o", str(obj)], check=True)
+    return obj
 
 
 def port_arg(rest: list[str]) -> tuple[str | None, list[str]]:

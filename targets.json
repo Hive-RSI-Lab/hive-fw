@@ -9,10 +9,22 @@
       "host_tests": "test",
       "prepare": "sh tools/fetch.sh {src}",
       "python": ["setuptools<70", "protobuf>=3.20,<4", "grpcio-tools>=1.48,<1.49"],
-      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 120, "settle": 10,
+      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 240, "settle": 10,
                "expect": "hifi: hifi-lite on \\S+, firmware",
                "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", "CONFIG_ESP32_REV_MIN=0",
-                             "# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set", "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"]}
+                             "# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set", "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"],
+               "eth": "emac",
+               "nvs": {"settings": {"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18"}}},
+               "adc1": 0,
+               "wifi": "off",
+               "boot": "ota_0",
+               "http": [
+                 {"get": "/api/v1/info", "expect": "\"model\":\"hifi-lite\",\"board\":\"lite-main\""},
+                 {"get": "/api/v1/state", "expect": "^\\{\"uptime_s\":\\d+,\"power\":\\{\"state\":"},
+                 {"post": "/api/v1/volume", "json": {"volume": 40}, "expect": "\"volume\":40,"},
+                 {"post": "/api/v1/volume", "json": {"volume": 400}, "status": 400},
+                 {"get": "/api/v1/state", "expect": "\"volume\":40,"},
+                 {"get": "/api/v1/nothing", "status": 404}]}
     }
   }
 }
