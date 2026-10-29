@@ -75,30 +75,39 @@ Their layout, which fw fits:
 - `fw build`: passes, through the `prepare` step. `squeezelite.bin` is
   2.69 MB and `recovery.bin` 1.38 MB.
 - `fw build --qemu`: passes.
-- `fw qemu`: fails, before app_main, with the same assert in IDF's
-  `do_core_init` that the firmware worker saw (`esp_vfs_console_register`).
-  The function only fails when `malloc` returns NULL. Under gdb it returned
-  `ESP_OK` and the boot went on, so it looks like something in QEMU or an
-  interrupt rather than a fault in the firmware (it isn't dual-core: a
-  single-core build fails the same way). The `hello` example
-  boots the same IDF with PSRAM, dual-core, without it. More in
-  [targets.json](../targets.json) and the proof (`proof/hifi-lite.json`).
+- `fw qemu`: passes (10-29). The image boots past IDF startup into
+  `app_main` and gets as far as the receiver's own `hifi: hifi-lite on
+  lite-main, firmware 0.1.0`, the HTTP server and the test API. Then it
+  waits for Wi-Fi, which QEMU doesn't have, and stays up. The pinned
+  `expect` is that hifi line.
 
-What was tried on the QEMU assert, none of which fixed it:
+### The QEMU assert, and what it was
 
-- single core (`CONFIG_FREERTOS_UNICORE`);
-- the brownout detector off.
+Until 10-29, `fw qemu` failed with `assert failed: 0x400d5505` in IDF's
+`do_core_init`. It was read as `esp_vfs_console_register`, and a QEMU or
+interrupt fault was suspected, but it was neither:
 
-An `-O2` build couldn't be tried as an overlay: squeezelite's sdkconfig
-carries the deprecated alias `CONFIG_OPTIMIZATION_LEVEL_RELEASE`, which
-puts SIZE back. The overlay has to name a deprecated alias too, and IDF's
-`sdkconfig.rename` files list them all.
+- The board's sdkconfig sets `CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`,
+  so an assert prints only a PC. At `-Os`, the asserts in `do_core_init`
+  (inlined into `start_cpu0`) share one `__assert_func` call. In
+  `recovery.elf`, the image that boots (squeezelite's factory partition),
+  that call is at `0x400d5505`, right after the VFS check. The `bnez a10`
+  after `esp_flash_init_default_chip` (`0x400d5574`) jumps back to it.
+- The log lines just before the assert were `spi_flash: detected chip: gd`
+  and `spi_flash: flash io: qio`. Those come from
+  `esp_flash_init_default_chip()`, which runs after the VFS console is
+  registered. So the assert that fired was `assert(flash_ret == ESP_OK)`.
+- The board flashes in QIO (`CONFIG_ESPTOOLPY_FLASHMODE_QIO`). IDF then sets
+  the flash's QE status bit, and QEMU's emulated GD flash doesn't keep it,
+  so the flash init fails. The hello example uses the default DIO.
+- The fix is two lines in the target's `qemu.sdkconfig`, which leave the
+  board's own build alone: `# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set`
+  and `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y`.
+- fw's overlay now also drops an option's deprecated aliases (IDF's
+  `sdkconfig.rename`). squeezelite's sdkconfig carries `CONFIG_FLASHMODE_QIO=y`
+  and `CONFIG_OPTIMIZATION_LEVEL_RELEASE=y`, and these no longer fight an
+  overlay line.
 
-Under gdb with hardware breakpoints:
-
-- both `malloc`s in `esp_vfs_register_common` return memory;
-- `a10` is 0 at the `beqz` before the assert;
-- the assert still fires on a free run.
-
-This points at QEMU or an interrupt rather than the firmware. The follow-up
-brief on hive-fw has the details.
+This explains what gdb showed: `a10` really was 0 at the VFS `beqz`. The
+jump into the shared assert came later, from the flash check. The earlier
+tries (single core, the brownout detector off) couldn't change that.

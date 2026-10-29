@@ -45,6 +45,20 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
     `fw build --qemu` lays them over the project's sdkconfig in a second
     build dir, `build-qemu/`, so `build/` stays the board's. `fw qemu` boots
     `build-qemu/` when these lines exist.
+    - An overlay line replaces the option's deprecated alias too (IDF's
+      `sdkconfig.rename` files), so `CONFIG_FLASHMODE_QIO=y` left in an old
+      sdkconfig can't put the board's value back.
+    - QIO flash fails in QEMU: IDF can't set the emulated flash's QE bit,
+      and `esp_flash_init_default_chip()` fails an assert before
+      `app_main`. Firmware built for QIO needs
+      `"# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set"` and
+      `"CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"` here.
+    - With `CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`, the asserts in
+      one function can share one `__assert_func` call, so the PC in
+      `assert failed: 0x…` can name the wrong line. Read the log lines
+      before it for the step that failed, and look for the branches into
+      that call (`objdump -d`). The ELF to read is the image that boots,
+      which for squeezelite is `recovery.elf`.
 
   With no `fw.json`, fw reads the IDF version from `.idf-version` or from a
   Dockerfile's `IDF_CLONE_BRANCH_OR_TAG`, which is how squeezelite-esp32
