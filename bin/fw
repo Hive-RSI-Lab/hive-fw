@@ -1,7 +1,7 @@
 #!/bin/sh
 # fw inside the Hive: ESP32 firmware with ESP-IDF, from an agent's sandbox.
 #
-#   fw setup [--idf vX.Y.Z] [--prefix DIR]   install a project's IDF, toolchains, QEMU
+#   fw setup [PROJECT] [--idf vX.Y.Z]   install a project's IDF, toolchains, QEMU
 #   fw doctor [PROJECT]       what's installed, what the project pins, ports seen
 #   fw env [PROJECT]          the IDF exports (eval "$(fw env)")
 #   fw build [PROJECT]        set-target on a fresh tree, then idf.py build

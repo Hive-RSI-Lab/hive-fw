@@ -10,8 +10,11 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 - `fw doctor [PROJECT]` shows what the project pins (`fw.json`), which IDF
   versions are installed and where, whether QEMU is there, and which serial
   ports the sandbox can see.
-- `fw setup --project PROJECT` installs the pinned IDF release: a shallow
-  clone with submodules, the xtensa toolchains, cmake, ninja, the IDF python
+- `fw setup [PROJECT]` installs the pinned IDF release (run from a repo whose
+  firmware sits in a subfolder, it takes each `fw.json` it finds there): a
+  shallow clone with submodules, any the Hive's proxy refuses over git
+  (github.com/nghttp2/nghttp2, which IDF needs) unpacked from GitHub's
+  codeload tarball of the pinned commit and marked `update=none`, the xtensa toolchains, cmake, ninja, the IDF python
   env (built on a uv python: 3.10 for IDF 4.x, 3.12 for 5.x and later), and
   Espressif's QEMU with the one library it needs that the host lacks
   (libslirp, from Ubuntu's .deb, checked by sha256). It skips anything a
