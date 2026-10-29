@@ -18,6 +18,7 @@ from __future__ import annotations
 import glob
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -158,10 +159,19 @@ def cmd_build(args: list[str]) -> int:
         rc = run_idf(env, src, ["set-target", pins["target"]])
         if rc:
             return rc
-    overlay = pins.get("qemu", {}).get("sdkconfig")
-    if qemu and overlay:
+    q = pins.get("qemu", {})
+    if qemu and fwlib.qemu_variant(pins):
         bq = src / "build-qemu"
         bq.mkdir(exist_ok=True)
+        overlay = list(q.get("sdkconfig") or [])
+        link = []
+        if q.get("eth"):
+            if q["eth"] != "emac" or pins["target"] != "esp32":
+                return die(f"qemu.eth: only \"emac\" on esp32 (QEMU's open_eth), not {q['eth']!r} on {pins['target']}")
+            overlay += fwlib.OPENETH_SDKCONFIG
+            obj = openeth_shim(env, bq, pins)
+            link = ["-D", "CMAKE_EXE_LINKER_FLAGS=" + " ".join(
+                [f"-Wl,--wrap={w}" for w in fwlib.OPENETH_WRAPS] + [str(obj)])]
         base = (src / "sdkconfig").read_text(encoding="utf-8") if (src / "sdkconfig").is_file() else ""
         want = overlay_sdkconfig(base, overlay, sdkconfig_renames(Path(env["IDF_PATH"]), src))
         sc, stamp = bq / "sdkconfig", bq / ".fw-overlay"
@@ -169,8 +179,22 @@ def cmd_build(args: list[str]) -> int:
         if not sc.is_file() or not stamp.is_file() or stamp.read_text(encoding="utf-8") != want:
             sc.write_text(want, encoding="utf-8")
             stamp.write_text(want, encoding="utf-8")
-        return run_idf(env, src, ["-B", str(bq), "-D", f"SDKCONFIG={sc}"] + rest + ["build"])
+        return run_idf(env, src, ["-B", str(bq), "-D", f"SDKCONFIG={sc}"] + link + rest + ["build"])
     return run_idf(env, src, rest + ["build"])
+
+
+def openeth_shim(env: dict, bq: Path, pins: dict) -> Path:
+    """qemu/openeth.c compiled with the project's own compiler into build-qemu/."""
+    obj = bq / "fw-openeth.o"
+    shim = fwlib.OPENETH_SHIM
+    if obj.is_file() and obj.stat().st_mtime >= shim.stat().st_mtime:
+        return obj
+    cc = shutil.which(f"xtensa-{pins['target']}-elf-gcc", path=env["PATH"])
+    if not cc:
+        raise SystemExit(die(f"no xtensa-{pins['target']}-elf-gcc on the IDF's PATH"))
+    subprocess.run([cc, "-c", "-Os", "-mlongcalls", f"-DFW_IDF_MAJOR={fwlib.idf_major(pins['idf'])}",
+                    str(shim), "-o", str(obj)], check=True)
+    return obj
 
 
 def port_arg(rest: list[str]) -> tuple[str | None, list[str]]:

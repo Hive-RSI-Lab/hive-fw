@@ -69,7 +69,7 @@ def check(name: str, src: Path, pins_over: dict | None, keep: bool) -> dict:
     st["build"] = stage("build", [str(FW), "build", str(proj)], logs / "build.log")
     st["host-test"] = stage("host-test", [str(FW), "host-test", str(proj)], logs / "host-test.log")
     ok = st["build"] == "pass"
-    if ok and pins.get("qemu", {}).get("sdkconfig"):
+    if ok and fwlib.qemu_variant(pins):
         ok = stage("build --qemu", [str(FW), "build", str(proj), "--qemu", "--no-prepare"],
                    logs / "build-qemu.log") == "pass"
     st["qemu"] = stage("qemu", [str(FW), "qemu", str(proj)], logs / "qemu.log") if ok else "fail"
