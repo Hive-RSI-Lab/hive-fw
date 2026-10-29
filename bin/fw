@@ -8,6 +8,7 @@
 #   fw idf [PROJECT] -- ARGS  any idf.py command (menuconfig needs a tty)
 #   fw host-test [PROJECT]    the project's unit tests on this machine (gcc + Unity)
 #   fw qemu [PROJECT]         boot the build in Espressif's QEMU, judge the UART log
+#                             (and its HTTP replies, over QEMU's open_eth)
 #   fw flash [PROJECT] --port P     flash over USB or rfc2217://host:port
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw ports                  the serial ports this sandbox can see
@@ -38,7 +39,7 @@ test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2

@@ -72,7 +72,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw idf [P] -- ARGS` | Any `idf.py` command with the right environment: `size-components`, `fullclean`, `-D SDKCONFIG_DEFAULTS=... reconfigure`. |
 | `eval "$(fw env [P])"` | Puts `IDF_PATH`, `PATH` and `FW_QEMU` in your shell, for scripts of your own. |
 | `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. |
-| `fw qemu [P]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. The log goes to `build/fw-qemu.log`. |
+| `fw qemu [P] [--http 'GET /path' ...] [--hold S]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
 | `fw flash [P] --port PORT` | `idf.py -p PORT flash`. `PORT` is `/dev/ttyUSB0` for a board on this machine, or `rfc2217://host:4000` for a board elsewhere. `FW_PORT` sets a default. |
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
@@ -89,8 +89,44 @@ open_eth Ethernet. It has no Wi-Fi, Bluetooth, I2S codec or I2C devices. A
 boot that reaches `app_main` and stays up catches partition-table, sdkconfig,
 PSRAM, early-init and crash-on-boot faults, which is most of what breaks a
 build. Code that waits on Wi-Fi or a codec should log a line of its own once
-it's past init, and `expect` should match that line. Anything past that needs
-a board or host tests.
+it's past init, and `expect` should match that line. Past that, the network
+is the way in (next), and the rest needs a board or host tests.
+
+### Talking to the firmware over QEMU's Ethernet
+
+`fw qemu` gives the guest QEMU's open_eth on user networking: the firmware
+gets 10.0.2.15 by DHCP, and fw forwards a free port on 127.0.0.1 to its
+port 80 (`"http_port"` for another). It needs two things:
+
+- **Requests to make.** `"qemu": {"http": [...]}` in `fw.json`. Once the
+  expect line shows, fw waits for the first request to get an answer (DHCP
+  and the server take a few seconds), then makes each one in order. The
+  run fails on a wrong status or a reply that doesn't match `expect`:
+
+  ```json
+  "http": [{"get": "/api/v1/info", "expect": "\"model\":\"hifi-lite\""},
+           {"post": "/api/v1/volume", "json": {"volume": 40}, "expect": "\"volume\":40,"},
+           {"post": "/api/v1/volume", "json": {"volume": 400}, "status": 400}]
+  ```
+
+  `status` defaults to 200. `"body": "text"` sends text instead of
+  `json`. The requests and replies are added to the end of the log. By
+  hand, `--http 'GET /api/v1/state'` or `--http 'POST /api/v1/volume
+  {"mute": true}'` (repeat it) replaces the list and prints the replies.
+  `--hold 300` keeps a passing run up five more minutes and prints the URL,
+  for curl of your own; run it in the background.
+- **Ethernet in the firmware.** QEMU emulates an OpenCores MAC with a
+  DP83848-like PHY, not the ESP32's EMAC. Firmware that already brings up
+  Ethernet through the EMAC (any RMII PHY: LAN8720, IP101, RTL8201,
+  KSZ80xx) needs no change: `"qemu": {"eth": "emac"}` makes
+  `fw build --qemu` set `CONFIG_ETH_USE_OPENETH` in `build-qemu/` and link
+  [qemu/openeth.c](../qemu/openeth.c), which `--wrap`s those constructors
+  to IDF's open_eth MAC and DP83848 driver. The board's `build/` is left
+  alone. The firmware still has to be told it has Ethernet, in its own way
+  (squeezelite-esp32: `CONFIG_ETH_CONFIG="model=LAN8720,mdc=23,mdio=18"` in
+  `qemu.sdkconfig`; the pins mean nothing to QEMU). Firmware with its own
+  open_eth code (IDF's `example_connect` with
+  `CONFIG_EXAMPLE_USE_OPENETH`) just needs that in `qemu.sdkconfig`.
 
 ## Boards
 
