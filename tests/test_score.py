@@ -2,6 +2,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -62,20 +63,66 @@ class Targets(unittest.TestCase):
     def prove(self, inputs, **stages):
         (self.root / "proof" / "lite.json").write_text(json.dumps({"inputs": inputs, "stages": stages}))
 
-    def test_unseen_target_is_judged_on_its_proof(self):
+    def git(self, *args):
+        subprocess.run(["git", "-C", str(self.projects / "rx"), "-c", "user.name=t", "-c", "user.email=t@t",
+                        *args], check=True, capture_output=True)
+
+    def clone(self, text="int x;"):
+        """rx with firmware/main.c committed on main; returns the firmware dir."""
+        fw = self.projects / "rx" / "firmware"
+        fw.mkdir(parents=True)
+        (fw / "main.c").write_text(text)
+        self.git("init", "-q", "-b", "main")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "x")
+        return fw
+
+    def test_unseen_target_is_unproven(self):
         self.prove("whatever", build="pass", qemu="pass")
         out = io.StringIO()
-        self.assertEqual(score.score(self.root, out), 66.7)
-        self.assertIn("not on this machine", out.getvalue())
+        self.assertEqual(score.score(self.root, out), 0.0)
+        self.assertIn("unproven: not on this machine", out.getvalue())
 
-    def test_seen_target_must_match_its_files(self):
+    def test_target_without_main_is_unproven(self):
         fw = self.projects / "rx" / "firmware"
         fw.mkdir(parents=True)
         (fw / "main.c").write_text("int x;")
         self.prove(score.inputs_hash(fw), build="pass", **{"host-test": "pass"}, qemu="pass")
+        out = io.StringIO()
+        self.assertEqual(score.score(self.root, out), 0.0)
+        self.assertIn("unproven: can't read rx@main:firmware", out.getvalue())
+
+    def test_seen_target_must_match_its_main_files(self):
+        fw = self.clone()
+        self.prove(score.inputs_hash(fw), build="pass", **{"host-test": "pass"}, qemu="pass")
         self.assertEqual(score.score(self.root, io.StringIO()), 100.0)
         (fw / "main.c").write_text("int y;")
+        self.git("commit", "-qam", "y")
         self.assertEqual(score.score(self.root, io.StringIO()), 0.0)
+
+    def test_working_tree_off_main_doesnt_count(self):
+        fw = self.clone()
+        self.git("checkout", "-qb", "pr")
+        (fw / "main.c").write_text("int pr;")
+        self.git("commit", "-qam", "pr")
+        self.prove(score.inputs_hash(fw), build="pass", **{"host-test": "pass"}, qemu="pass")
+        out = io.StringIO()
+        self.assertEqual(score.score(self.root, out), 0.0)  # proven on the branch, not on main
+        self.assertIn("stale", out.getvalue())
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "pr")
+        self.git("checkout", "-q", "-b", "next")
+        (fw / "main.c").write_text("int dirty;")  # uncommitted edits don't count either
+        self.assertEqual(score.score(self.root, io.StringIO()), 100.0)
+
+    def test_main_files_skip_nothing_the_hash_would_see(self):
+        fw = self.clone()
+        (fw / "sub").mkdir()
+        (fw / "sub" / "a.h").write_text("#x")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "sub")
+        d = score.main_files({"project": "rx", "path": "firmware"}, Path(tempfile.mkdtemp()))
+        self.assertEqual(score.inputs_hash(d), score.inputs_hash(fw))
 
 
 class Proofs(unittest.TestCase):
