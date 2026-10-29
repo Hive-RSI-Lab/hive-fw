@@ -114,10 +114,32 @@ def sdkconfig_key(line: str) -> str | None:
     return None
 
 
-def overlay_sdkconfig(base: str, overlay: list[str]) -> str:
-    """base with every option the overlay names dropped, then the overlay."""
-    names = {sdkconfig_key(ln) for ln in overlay} - {None}
-    kept = [ln for ln in base.splitlines() if sdkconfig_key(ln) not in names]
+def sdkconfig_renames(*roots: Path) -> dict[str, str]:
+    """Deprecated option -> its current name, from every sdkconfig.rename
+    under the roots (IDF's components and the project's). "!CONFIG_X" (an
+    inverted rename, IDF 5) counts as the same option."""
+    out: dict[str, str] = {}
+    for root in roots:
+        files = [root / "sdkconfig.rename"] + sorted(root.glob("components/*/sdkconfig.rename"))
+        for f in files:
+            if not f.is_file():
+                continue
+            for ln in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = ln.split("#", 1)[0].split()
+                if len(parts) == 2:
+                    out[parts[0]] = parts[1].lstrip("!")
+    return out
+
+
+def overlay_sdkconfig(base: str, overlay: list[str], renames: dict[str, str] | None = None) -> str:
+    """base with every option the overlay names dropped, its deprecated
+    aliases too (renames: old -> new, else a stale alias such as
+    CONFIG_FLASHMODE_QIO=y would put the board's value back), then the overlay."""
+    renames = renames or {}
+    canon = lambda k: renames.get(k, k)  # noqa: E731
+    names = {canon(sdkconfig_key(ln)) for ln in overlay if sdkconfig_key(ln)}
+    kept = [ln for ln in base.splitlines()
+            if sdkconfig_key(ln) is None or canon(sdkconfig_key(ln)) not in names]
     return "\n".join(kept + list(overlay)) + "\n"
 
 
@@ -141,7 +163,7 @@ def cmd_build(args: list[str]) -> int:
         bq = src / "build-qemu"
         bq.mkdir(exist_ok=True)
         base = (src / "sdkconfig").read_text(encoding="utf-8") if (src / "sdkconfig").is_file() else ""
-        want = overlay_sdkconfig(base, overlay)
+        want = overlay_sdkconfig(base, overlay, sdkconfig_renames(Path(env["IDF_PATH"]), src))
         sc, stamp = bq / "sdkconfig", bq / ".fw-overlay"
         # IDF rewrites sdkconfig as it configures: compare what we wrote last.
         if not sc.is_file() or not stamp.is_file() or stamp.read_text(encoding="utf-8") != want:

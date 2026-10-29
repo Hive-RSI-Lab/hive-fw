@@ -9,8 +9,10 @@
       "host_tests": "test",
       "prepare": "sh tools/fetch.sh {src}",
       "python": ["setuptools<70", "protobuf>=3.20,<4", "grpcio-tools>=1.48,<1.49"],
-      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 120,
-               "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", "CONFIG_ESP32_REV_MIN=0"]}
+      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 120, "settle": 10,
+               "expect": "hifi: hifi-lite on \\S+, firmware",
+               "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", "CONFIG_ESP32_REV_MIN=0",
+                             "# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set", "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"]}
     }
   }
 }
