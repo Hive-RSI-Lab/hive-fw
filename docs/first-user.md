@@ -69,17 +69,35 @@ Their layout, which fw fits:
   the library from Ubuntu's .deb, checked by sha256, and keeps it beside
   QEMU.
 
-## Where the receiver's firmware stands in fw (10-28)
+## Where the receiver's firmware stands in fw (10-29)
 
-- `fw host-test`: passes, 4 suites.
-- `fw build`: passes, through the `prepare` step. `squeezelite.bin` is
-  2.69 MB and `recovery.bin` 1.38 MB.
-- `fw build --qemu`: passes.
-- `fw qemu`: passes (10-29). The image boots past IDF startup into
-  `app_main` and gets as far as the receiver's own `hifi: hifi-lite on
-  lite-main, firmware 0.1.0`, the HTTP server and the test API. Then it
-  waits for Wi-Fi, which QEMU doesn't have, and stays up. The pinned
-  `expect` is that hifi line.
+- `fw host-test`: passes, 5 suites.
+- `fw build`: passes, through the `prepare` step.
+- `fw build --qemu`: passes, with the open_eth, ADC and Wi-Fi shims.
+- `fw qemu`: passes, and talks to the firmware. The main app (`ota_0`,
+  selected by `"boot"`) boots, and squeezelite brings up Ethernet as a
+  LAN8720 from the preset `eth_config`. That's open_eth underneath, and it
+  gets 10.0.2.15 by DHCP. Then six requests to the test API over the
+  forwarded port all answer as `docs/test-api.md` says:
+  - `GET /api/v1/info` gives `"model":"hifi-lite","board":"lite-main"`;
+  - `GET /api/v1/state` gives `"power":{"state":"wait_pd"` (no PD sink in
+    QEMU);
+  - `POST /api/v1/volume {"volume":40}` returns `"volume":40`, and
+    `{"volume":400}` gets a 400;
+  - a second `/state` still shows 40;
+  - an unknown path gets a 404.
+
+  Three things stood in the way:
+  - The firmware read the VBUS ADC, which hangs in QEMU, so the boot
+    stopped silently right after `hifi_ir`, from the 10-29 firmware PRs on.
+  - Wi-Fi start panicked.
+  - The factory image is squeezelite's recovery app, which skips Ethernet.
+
+  The shims and `"boot"` in [README.md](README.md) are for these.
+- Seen on the way, for the receiver: `/api/v1/state`'s `net.ip` reads only
+  the Wi-Fi STA interface, so it's empty when the box is on Ethernet (Plus
+  and Ultra have `caps.eth`). `info.mac` is all zeros in QEMU, whose
+  efuses are blank.
 
 ### The QEMU assert, and what it was
 

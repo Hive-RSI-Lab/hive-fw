@@ -26,16 +26,20 @@ Firmware that brings Ethernet up through the ESP32 EMAC gets open_eth from
 from __future__ import annotations
 
 import argparse
+import csv
 import http.client
+import io
 import json
 import os
 import re
 import selectors
 import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
+import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,8 +50,86 @@ SIZES = {"1MB": 1, "2MB": 2, "4MB": 4, "8MB": 8, "16MB": 16}
 MACHINES = {"esp32": "esp32", "esp32s3": "esp32s3"}
 
 
-def merge(build: Path, out: Path, flash_size: str | None = None) -> tuple[Path, str]:
-    """One flash image from build/flasher_args.json; returns it and the chip."""
+def partitions(build: Path) -> dict[str, tuple[int, int, int, int]]:
+    """name -> (type, subtype, offset, size) from the build's binary
+    partition table (32-byte entries: magic 0x50AA, type, subtype, offset,
+    size, name)."""
+    t = (build / "partition_table" / "partition-table.bin").read_bytes()
+    out = {}
+    for i in range(0, len(t) - 31, 32):
+        magic, typ, sub, off, size = struct.unpack_from("<HBBII", t, i)
+        if magic != 0x50AA:
+            break
+        out[t[i + 12:i + 28].split(b"\0")[0].decode(errors="replace")] = (typ, sub, off, size)
+    return out
+
+
+def otadata(parts: dict, boot: str) -> list[tuple[int, bytes]]:
+    """fw.json "qemu": {"boot": "ota_0"}: otadata that has the bootloader
+    start that OTA app instead of the factory one (squeezelite's factory app
+    is its recovery). One select entry, as IDF writes it: ota_seq N+1 for
+    slot N, its CRC (crc32_le from all-ones, which is zlib's), state unset."""
+    if boot not in parts:
+        raise ValueError(f"qemu.boot: no partition {boot!r} (the table has {', '.join(parts)})")
+    typ, sub = parts[boot][:2]
+    if typ != 0 or not 0x10 <= sub < 0x20:
+        raise ValueError(f"qemu.boot: {boot} isn't an OTA app partition")
+    od = [p for p in parts.values() if p[:2] == (1, 0)]
+    if not od:
+        raise ValueError("qemu.boot: the partition table has no otadata")
+    seq = sub - 0x10 + 1
+    entry = struct.pack("<I20sII", seq, b"\xff" * 20, 0xFFFFFFFF, zlib.crc32(struct.pack("<I", seq), 0xFFFFFFFF))
+    return [(od[0][2], entry)]
+
+
+def nvs_csv(namespaces: dict) -> str:
+    """fw.json qemu.nvs's {namespace: {key: value}} for one partition, as
+    nvs_partition_gen.py's CSV: a string is a string, a whole number an i32."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["key", "type", "encoding", "value"])
+    for ns, kv in namespaces.items():
+        w.writerow([ns, "namespace", "", ""])
+        for k, v in kv.items():
+            if isinstance(v, bool) or not isinstance(v, (str, int)):
+                raise ValueError(f"qemu.nvs {ns}.{k}: a string or a whole number, not {v!r}")
+            w.writerow([k, "data", "string" if isinstance(v, str) else "i32", v])
+    return buf.getvalue()
+
+
+def nvs_images(build: Path, pins: dict) -> list[tuple[int, bytes]]:
+    """fw.json "qemu": {"nvs": {"partition": {"namespace": {"key": value}}}}:
+    settings the firmware finds in flash on its first boot (squeezelite's
+    eth_config, Wi-Fi credentials...), made with the IDF's own
+    nvs_partition_gen.py and laid over the partition. Each boot starts from
+    them: the image is rebuilt every run."""
+    spec = pins.get("qemu", {}).get("nvs")
+    if not spec:
+        return []
+    parts = partitions(build)
+    root = fwlib.find_idf(pins["idf"])
+    if not root:
+        raise RuntimeError(f"qemu.nvs needs ESP-IDF {pins['idf']} (fw setup)")
+    idf = root / f"esp-idf-{pins['idf']}"
+    py = Path((idf / ".fw-ok").read_text(encoding="utf-8").strip()) / "bin" / "python"
+    gen = idf / "components" / "nvs_flash" / "nvs_partition_generator" / "nvs_partition_gen.py"
+    out = []
+    for name, namespaces in spec.items():
+        if name not in parts:
+            raise RuntimeError(f"qemu.nvs: no partition {name!r} (the table has {', '.join(parts)})")
+        off, size = parts[name][2:]
+        c, b = build / f"fw-nvs-{name}.csv", build / f"fw-nvs-{name}.bin"
+        c.write_text(nvs_csv(namespaces), encoding="utf-8")
+        subprocess.run([str(py), str(gen), "generate", str(c), str(b), hex(size)], check=True,
+                       stdout=subprocess.DEVNULL, env=dict(os.environ, PYTHONPATH=""))
+        out.append((off, b.read_bytes()))
+    return out
+
+
+def merge(build: Path, out: Path, flash_size: str | None = None,
+          extra: list[tuple[int, bytes]] | None = None) -> tuple[Path, str]:
+    """One flash image from build/flasher_args.json, with extra (offset,
+    data) laid on top; returns it and the chip."""
     fa = json.loads((build / "flasher_args.json").read_text(encoding="utf-8"))
     size = flash_size or fa.get("flash_settings", {}).get("flash_size", "4MB")
     if size not in SIZES:
@@ -58,6 +140,10 @@ def merge(build: Path, out: Path, flash_size: str | None = None) -> tuple[Path, 
         o = int(off, 16)
         if o + len(data) > len(img):
             raise ValueError(f"{name} at {off} doesn't fit a {size} flash")
+        img[o:o + len(data)] = data
+    for o, data in extra or []:
+        if o + len(data) > len(img):
+            raise ValueError(f"{len(data)} bytes at {o:#x} don't fit a {size} flash")
         img[o:o + len(data)] = data
     out.write_bytes(bytes(img))
     chip = fa.get("extra_esptool_args", {}).get("chip", "esp32")
@@ -255,7 +341,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fw qemu: no {build}/flasher_args.json: build first (fw build"
               + (" --qemu" if build.name == "build-qemu" else "") + ")", file=sys.stderr)
         return 2
-    image, chip = merge(build, build / "fw-flash.bin", a.flash_size or q.get("flash"))
+    try:
+        image, chip = merge(build, build / "fw-flash.bin", a.flash_size or q.get("flash"),
+                            nvs_images(build, pins)
+                            + (otadata(partitions(build), q["boot"]) if q.get("boot") else []))
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
+        print(f"fw qemu: {e}", file=sys.stderr)
+        return 2
     if a.image_only:
         print(image)
         return 0

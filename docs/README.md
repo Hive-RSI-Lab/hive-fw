@@ -116,17 +116,43 @@ port 80 (`"http_port"` for another). It needs two things:
   `--hold 300` keeps a passing run up five more minutes and prints the URL,
   for curl of your own; run it in the background.
 - **Ethernet in the firmware.** QEMU emulates an OpenCores MAC with a
-  DP83848-like PHY, not the ESP32's EMAC. Firmware that already brings up
-  Ethernet through the EMAC (any RMII PHY: LAN8720, IP101, RTL8201,
-  KSZ80xx) needs no change: `"qemu": {"eth": "emac"}` makes
-  `fw build --qemu` set `CONFIG_ETH_USE_OPENETH` in `build-qemu/` and link
-  [qemu/openeth.c](../qemu/openeth.c), which `--wrap`s those constructors
-  to IDF's open_eth MAC and DP83848 driver. The board's `build/` is left
-  alone. The firmware still has to be told it has Ethernet, in its own way
-  (squeezelite-esp32: `CONFIG_ETH_CONFIG="model=LAN8720,mdc=23,mdio=18"` in
-  `qemu.sdkconfig`; the pins mean nothing to QEMU). Firmware with its own
-  open_eth code (IDF's `example_connect` with
-  `CONFIG_EXAMPLE_USE_OPENETH`) just needs that in `qemu.sdkconfig`.
+  DP83848-like PHY, not the ESP32's EMAC. Firmware with its own open_eth
+  code (IDF's `example_connect` with `CONFIG_EXAMPLE_USE_OPENETH`) just
+  needs that in `qemu.sdkconfig`. Firmware that brings up Ethernet through
+  the EMAC (any RMII PHY: LAN8720, IP101, RTL8201, KSZ80xx) needs no change.
+  `"eth": "emac"` sets `CONFIG_ETH_USE_OPENETH` and links a shim (below)
+  that hands those constructors IDF's open_eth MAC and DP83848 driver. The
+  firmware still has to be told it has Ethernet, in its own way. For
+  squeezelite that's an NVS setting (below); the pins mean nothing to QEMU.
+
+### What QEMU lacks, and the shims for it
+
+Some calls never return in QEMU, or crash it, because the hardware isn't
+emulated. For each one, `fw build --qemu` can link a small file from
+[qemu/](../qemu/) into `build-qemu/` with `-Wl,--wrap`. The firmware's own
+code is unchanged, and the board's `build/` never sees the shim.
+
+| `fw.json` `"qemu"` key | what it wraps | why |
+|---|---|---|
+| `"eth": "emac"` | `esp_eth_mac_new_esp32`, `esp_eth_phy_new_{lan87xx,ip101,rtl8201,ksz80xx,...}` | QEMU's Ethernet is open_eth, not the EMAC ([openeth.c](../qemu/openeth.c)) |
+| `"adc1": 0` or `{"6": 1700}` | `adc1_get_raw`, which returns the raw value given for the channel (else 0) | no SAR ADC: the read spins forever holding a spinlock, and the core's tick stops, so the boot hangs silently ([adc.c](../qemu/adc.c)) |
+| `"wifi": "off"` | `esp_wifi_start`, `_stop`, `_connect`, `_disconnect`, `_scan_start`, `_scan_stop`, which all succeed | no radio: PHY calibration panics with `LoadStorePIFAddrError` in `register_chipv7_phy` ([nowifi.c](../qemu/nowifi.c)) |
+
+Two more keys shape the flash image `fw qemu` boots, with no rebuild:
+
+- `"nvs": {"settings": {"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18"}}}`
+  is *partition → namespace → key → value* (a string, or a whole number
+  as an i32). fw writes the partition with the IDF's own
+  `nvs_partition_gen.py` on every run, so each boot starts from these
+  values, as on a fresh board.
+- `"boot": "ota_0"` writes otadata that selects that OTA slot, so the
+  bootloader starts it instead of the factory app. squeezelite's factory
+  app is its recovery, which skips Ethernet.
+
+A boot that seems to stop with no fatal line, its log timestamps frozen, is
+usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp::1234` and
+`xtensa-esp32-elf-gdb -ex 'target remote :1234' -ex 'thread apply all bt'`
+to see where. That's how the ADC wait was found.
 
 ## Boards
 

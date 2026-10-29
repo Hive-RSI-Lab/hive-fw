@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import struct
 import sys
 import tempfile
 import textwrap
@@ -151,17 +152,77 @@ class HttpOverOpenEth(unittest.TestCase):
         self.assertTrue(v.ok, v.reason)
 
 
-class OpenEthShim(unittest.TestCase):
-    def test_wraps_match_the_shim(self):
+def ptable(*rows) -> bytes:
+    """A binary partition table: (name, type, subtype, offset, size) rows."""
+    t = b"".join(struct.pack("<HBBII16sI", 0x50AA, ty, st, off, size, name.encode(), 0)
+                 for name, ty, st, off, size in rows)
+    return t + b"\xeb\xeb" + b"\xff" * 30
+
+
+class Shims(unittest.TestCase):
+    def test_wraps_match_the_shims(self):
         src = fwlib.OPENETH_SHIM.read_text()
         defined = set(re.findall(r"__wrap_(esp_eth_\w+)\(", src))
         defined |= {f"esp_eth_phy_new_{n}" for n in re.findall(r"^FW_PHY\((\w+)\)", src, re.M)}
         self.assertEqual(defined, set(fwlib.OPENETH_WRAPS))
+        src = fwlib.NOWIFI_SHIM.read_text()
+        self.assertEqual(set(re.findall(r"^FW_OK\((\w+)\)", src, re.M)), set(fwlib.NOWIFI_WRAPS))
+        self.assertIn("__wrap_adc1_get_raw", fwlib.ADC_SHIM.read_text())
 
-    def test_eth_makes_a_qemu_build(self):
-        self.assertTrue(fwlib.qemu_variant({"qemu": {"eth": "emac"}}))
-        self.assertFalse(fwlib.qemu_variant({"qemu": {"http": [{"get": "/"}]}}))
+    def test_shims_make_a_qemu_build(self):
+        for q in ({"eth": "emac"}, {"adc1": 0}, {"wifi": "off"}):
+            self.assertTrue(fwlib.qemu_variant({"qemu": q}), q)
+        self.assertFalse(fwlib.qemu_variant({"qemu": {"http": [{"get": "/"}], "boot": "ota_0"}}))
         self.assertEqual(fwlib.qemu_build_dir(Path("/s"), {"qemu": {"eth": "emac"}}), Path("/s/build-qemu"))
+
+    def test_adc1_values(self):
+        self.assertEqual(fwlib.adc1_raw(0), [0] * 8)
+        self.assertEqual(fwlib.adc1_raw({"6": 1700}), [0, 0, 0, 0, 0, 0, 1700, 0])
+        for bad in (True, "0", {"8": 1}, {"6": 5000}, {"x": 1}, -1):
+            with self.assertRaises(ValueError, msg=bad):
+                fwlib.adc1_raw(bad)
+
+
+class Flash(unittest.TestCase):
+    def setUp(self):
+        self.b = Path(tempfile.mkdtemp())
+        (self.b / "partition_table").mkdir()
+        (self.b / "partition_table" / "partition-table.bin").write_bytes(ptable(
+            ("nvs", 1, 2, 0x9000, 0x4000), ("otadata", 1, 0, 0xD000, 0x2000),
+            ("factory", 0, 0, 0x10000, 0x100000), ("ota_1", 0, 0x11, 0x110000, 0x100000),
+            ("settings", 1, 2, 0x210000, 0x10000)))
+
+    def test_partitions(self):
+        p = qemu.partitions(self.b)
+        self.assertEqual(list(p), ["nvs", "otadata", "factory", "ota_1", "settings"])
+        self.assertEqual(p["ota_1"], (0, 0x11, 0x110000, 0x100000))
+
+    def test_otadata_boots_the_slot(self):
+        [(off, e)] = qemu.otadata(qemu.partitions(self.b), "ota_1")
+        self.assertEqual(off, 0xD000)
+        seq, _, state, crc = struct.unpack("<I20sII", e)
+        self.assertEqual((seq, state), (2, 0xFFFFFFFF))
+        # IDF's crc for ota_seq 1 is 0x4743989a (its own test data); ours is the same function
+        self.assertEqual(qemu.zlib.crc32(struct.pack("<I", 1), 0xFFFFFFFF), 0x4743989A)
+        self.assertEqual(crc, qemu.zlib.crc32(struct.pack("<I", 2), 0xFFFFFFFF))
+        for bad in ("factory", "nvs", "ota_9"):
+            with self.assertRaises(ValueError, msg=bad):
+                qemu.otadata(qemu.partitions(self.b), bad)
+
+    def test_nvs_csv(self):
+        c = qemu.nvs_csv({"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18", "n": 3}})
+        self.assertEqual(c.splitlines(), ["key,type,encoding,value", "config,namespace,,",
+                                          'eth_config,data,string,"model=LAN8720,mdc=23,mdio=18"',
+                                          "n,data,i32,3"])
+        with self.assertRaises(ValueError):
+            qemu.nvs_csv({"config": {"x": [1]}})
+
+    def test_merge_lays_extra_on_top(self):
+        d = fake_build(self.b, {"0x1000": ("b.bin", b"B" * 16)})
+        img, _ = qemu.merge(d, d / "out.bin", extra=[(0xD000, b"OTA"), (0x1004, b"xy")])
+        b = img.read_bytes()
+        self.assertEqual(b[0xD000:0xD003], b"OTA")
+        self.assertEqual(b[0x1000:0x1008], b"BBBBxyBB")
 
 
 if __name__ == "__main__":
