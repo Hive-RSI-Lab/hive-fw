@@ -77,6 +77,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
+| `fw pins [P] [--target NAME] [--board F] [--json]` | Checks the firmware's pin map against the board's KiCad netlist ([below](#pins-firmware-against-the-board)). |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
 (`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
@@ -91,6 +92,71 @@ PSRAM, early-init and crash-on-boot faults, which is most of what breaks a
 build. Code that waits on Wi-Fi or a codec should log a line of its own once
 it's past init, and `expect` should match that line. Anything past that needs
 a board or host tests.
+
+## Pins: firmware against the board
+
+`fw pins` reads the GPIOs the firmware assigns and the nets on the ESP32's
+pins in the board's KiCad files, and checks every firmware pin. A pin passes
+when, of all the nets on the ESP32, the one whose name best matches the
+firmware's name for it is the net on that GPIO. So `#define PIN_AMP_SDZ 21`
+passes on a board whose GPIO21 net is `AMP_SDZ_IO`, and fails, naming where
+`AMP_SDZ_IO` really is, when it sits on GPIO23. A pin also fails when its
+GPIO isn't connected, when no net matches its name, or when it's the
+module's flash (6-11) or a WROVER's PSRAM (16, 17). Nets on the ESP32 that
+the firmware never uses are listed as notes, since a board signal nobody
+reads is often a missing feature. The exit code is 0 on a pass, 1 on a
+fail and 2 when it couldn't check.
+
+It reads, from the sources:
+- `#define NAME N` (or `GPIO_NUM_N`) where NAME says PIN, GPIO or a signal
+  (SDA, SCL, TX, BCLK, ...);
+- `#define NAME ADC1_CHANNEL_6`, which it maps to the channel's GPIO;
+- squeezelite-esp32's config strings: `dac_config`'s `bck= ws= do= di= mck=
+  sda= scl=`, `set_GPIO`'s `14=ir,22=green`, and the buttons' JSON
+  (`"gpio":13 ... "ACTRLS_VOLUP"`).
+
+A patch's added lines count; its context lines don't. Names are matched by
+their words, with the usual aliases (bck/BCLK, ws/LRCK, do/DOUT, green/LED,
+TOGGLE/PLAY). A name that matches no net gets one in `nets`.
+
+The firmware's `fw.json`, or a target's pins in targets.json, says where to
+look:
+
+```json
+"pinmap": {"board": ["../boards/x/kicad/x.kicad_sch", "../boards/x/kicad/x.kicad_pcb"],
+           "sources": ["main/board.h", "patches/*.patch"],
+           "nets": {"PIN_MYSTERY": "BTN_PLAY"}, "ignore": ["PIN_SPARE"], "ref": "U5"}
+```
+
+- A `.net` netlist is read directly.
+- A `.kicad_sch` is exported with kicad-cli (`$KICAD_CLI`, `kicad-cli` on
+  PATH, or the Hive's `/hive/tools/kicad-*`). On a loaded machine the export
+  can take a minute, and the time limit is `FW_KICAD_TIMEOUT` (180 s).
+  Without kicad-cli, or past that limit, it reads the `.net` beside the
+  schematic and says that file may be older.
+- A `.kicad_pcb` is read through its pads' nets, so the check covers the
+  layout that gets fabbed. Pads with no pin names are mapped with the
+  WROOM-32/WROVER pad table.
+
+**From hwde's side.** A board change can break the firmware, so a hwde
+agent working on a board that firmware runs on can check it in a second
+from the product's checkout, without the IDF:
+
+```sh
+$HIVE_MODULES/hive-fw/bin/fw pins firmware --target hifi-lite
+$HIVE_MODULES/hive-fw/bin/fw pins firmware --target hifi-lite --board boards/lite-main/kicad/lite-main.kicad_pcb
+```
+
+`--target` takes the pinmap from targets.json, with the board paths
+relative to the firmware dir given, so it checks the checkout's own board.
+`--json` gives the verdict as data.
+
+**Scored.** Firmware whose pins name a board gets a fourth stage, `pins`.
+`fw check-all` runs it on the firmware's own files, and the proof keeps a
+hash of the board files. The stage stops counting when the board changes.
+`fw check-all NAME --only pins` re-proves just that stage in a second. It
+keeps the other stages only when the proof was made on the same firmware
+files.
 
 ## Boards
 
@@ -134,7 +200,8 @@ work on.
   version and a hash of the firmware's files. Run it after you change what a
   firmware exercises, then commit `proof/`.
 - **Score**, `bin/fw score`, higher is better. It is the share of stages
-  (build, host-test, qemu, for every example and target) that a current
+  (build, host-test, qemu, and pins where a board is named, for every
+  example and target) that a current
   proof shows passing, as a percentage. A stale proof counts nothing. A
   target whose files this machine can't see is judged on its proof alone.
   It reads files only. To raise it:

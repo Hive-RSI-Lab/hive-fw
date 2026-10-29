@@ -6,7 +6,7 @@ It is a handful of small commands that agents combine as they need, not a
 pipeline.
 
 - `bin/fw` runs the commands: `setup`, `doctor`, `build`, `idf`,
-  `host-test`, `qemu`, `flash`, `monitor`, `ports`, `bootlog`, `test`,
+  `host-test`, `qemu`, `flash`, `monitor`, `ports`, `bootlog`, `pins`, `test`,
   `check-all` and `score`.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.
@@ -22,5 +22,5 @@ pipeline.
 - **Test**: `bin/fw test`, the unit tests in `tests/`. It needs no
   toolchain and fails when an example's proof is missing or stale.
 - **Score**: `bin/fw score`, higher is better. It is the share of
-  example stages (build, host-test, qemu) proven by `bin/fw check-all` on
-  the examples' current files.
+  example and target stages (build, host-test, qemu, and pins where the
+  firmware names its board) proven by `bin/fw check-all` on current files.

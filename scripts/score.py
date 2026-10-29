@@ -4,7 +4,8 @@
 
 What's scored is every firmware fw serves, each with three stages: build,
 host-test and qemu (a boot in QEMU that reaches its expect line and stays
-up):
+up), and a fourth, pins (fw pins: its pin map against the board's netlist),
+for firmware whose pins name a board ("pinmap"):
   - examples/<name>/: this module's own examples;
   - targets.json: real products in other Hive projects, first the hifi
     receiver's Lite firmware (hifi-receiver-2's firmware/).
@@ -26,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STAGES = ("build", "host-test", "qemu")
+PINS = "pins"
 SKIP = {"build", "build-host", "build-qemu", ".fw-src", ".git", "__pycache__"}
 SKIP_FILES = {"sdkconfig", "sdkconfig.old", "dependencies.lock"}
 
@@ -53,6 +55,35 @@ def firmware(root: Path = ROOT) -> dict[str, Path | None]:
     return out
 
 
+def pinmap(root: Path, name: str, src: Path | None) -> dict:
+    """Where fw pins looks: the target's pins' "pinmap", under the
+    firmware's own fw.json's ({} when it names no board)."""
+    pm = dict(targets(root).get(name, {}).get("pins", {}).get("pinmap") or {})
+    f = (src or root / "examples" / name) / "fw.json"
+    if f.is_file():
+        pm.update(json.loads(f.read_text(encoding="utf-8")).get("pinmap") or {})
+    return pm if pm.get("board") else {}
+
+
+def stages(root: Path, name: str, src: Path | None) -> tuple[str, ...]:
+    return STAGES + ((PINS,) if pinmap(root, name, src) else ())
+
+
+def board_files(src: Path, pm: dict) -> list[Path]:
+    b = pm.get("board") or []
+    return [(src / x).resolve() for x in ([b] if isinstance(b, str) else b)]
+
+
+def board_hash(src: Path, pm: dict) -> str | None:
+    """sha256 over the board files fw pins reads; None when one isn't here."""
+    h = hashlib.sha256()
+    for f in board_files(src, pm):
+        if not f.is_file():
+            return None
+        h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
 def inputs_hash(example: Path) -> str:
     """sha256 over the firmware's files (paths and contents), build output left out."""
     h = hashlib.sha256()
@@ -76,16 +107,23 @@ def proven(root: Path, name: str, src: Path | None = None) -> tuple[list[str], s
         note = "  (files not on this machine: proof taken as is)"
     elif rec.get("inputs") != inputs_hash(src):
         return [], "proof is stale: the files changed since (fw check-all)"
-    return [s for s in STAGES if rec.get("stages", {}).get(s) == "pass"], note.strip()
+    ok = [s for s in stages(root, name, src) if rec.get("stages", {}).get(s) == "pass"]
+    if PINS in ok and src is not None:
+        bh = board_hash(src, pinmap(root, name, src))
+        if bh is not None and rec.get("board") != bh:
+            ok.remove(PINS)
+            note = "pins proof is stale: the board changed since (fw check-all --only pins)"
+    return ok, note.strip()
 
 
 def score(root: Path = ROOT, out=sys.stdout) -> float:
     total = done = 0
     for n, src in firmware(root).items():
         ok, why = proven(root, n, src)
-        total += len(STAGES)
+        want = stages(root, n, src)
+        total += len(want)
         done += len(ok)
-        print(f"{n}: {len(ok)}/{len(STAGES)} {' '.join(ok)}{'  ' + why if why else ''}", file=out)
+        print(f"{n}: {len(ok)}/{len(want)} {' '.join(ok)}{'  ' + why if why else ''}", file=out)
     return round(100.0 * done / total, 1) if total else 0.0
 
 

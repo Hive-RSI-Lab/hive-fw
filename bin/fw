@@ -12,6 +12,8 @@
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw ports                  the serial ports this sandbox can see
 #   fw bootlog LOG            judge a saved boot log
+#   fw pins [PROJECT] [--target NAME] [--board F]
+#                             the firmware's pins against the board's netlist
 #   fw test                   this module's own tests (the per-change test)
 #   fw check-all              build, host-test and boot every example (slow)
 #   fw score                  the share of example stages proven (the score)
@@ -32,13 +34,14 @@ env | idf | build | flash | monitor | ports | doctor) exec "$py" "$s/fwidf.py" "
 host-test) exec "$py" "$s/hosttest.py" "$@" ;;
 qemu) exec "$py" "$s/qemu.py" "$@" ;;
 bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
+pins) exec "$py" "$s/pins.py" "$@" ;;
 check-all) exec "$py" "$s/check_all.py" "$@" ;;
 score) exec "$py" "$s/score.py" "$@" ;;
 test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2
