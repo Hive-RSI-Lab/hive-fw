@@ -120,11 +120,13 @@ work on.
   per-change test. It covers every firmware fw serves:
   - `examples/<name>/`, this module's own examples;
   - the real products in [targets.json](../targets.json), read from
-    `$HIVE_PROJECTS`. The first is `hifi-lite`, the receiver's Lite
-    firmware in hifi-receiver-2's `firmware/`.
+    their project's main branch (a target's `ref`, default `main`) in the
+    clone under `$HIVE_PROJECTS`, not from the clone's working tree. The
+    first is `hifi-lite`, the receiver's Lite firmware in hifi-receiver-2's
+    `firmware/`.
 
   `--from DIR` checks one target from another place, such as a branch that
-  hasn't merged. Each firmware is copied to a work dir and run through
+  hasn't merged; its proof counts once main has the same files. Each firmware is copied to a work dir and run through
   `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
   it has QEMU-only config). A target's pins in targets.json fill in what its
   own `fw.json` lacks, and its IDF tree is kept in
@@ -136,8 +138,10 @@ work on.
 - **Score**, `bin/fw score`, higher is better. It is the share of stages
   (build, host-test, qemu, for every example and target) that a current
   proof shows passing, as a percentage. A stale proof counts nothing. A
-  target whose files this machine can't see is judged on its proof alone.
-  It reads files only. To raise it:
+  target is judged only on its project's main files: when they're missing
+  (no clone, no main, no such path) its stages are unproven, and a proof
+  made on a branch is stale until main has the same files. It reads files
+  only. To raise it:
   - make a failing stage of the real product pass;
   - add the next real firmware to targets.json;
   - add an example that proves something new: another IDF version, another

@@ -3,8 +3,10 @@
     fw check-all [NAME ...] [--keep] [--from DIR]
 
 The firmware are examples/<name>/ and the targets in targets.json (real
-products in other Hive projects, read from $HIVE_PROJECTS; --from DIR reads
-a single named target from DIR instead, say a branch not yet merged). Each is
+products in other Hive projects, read from their main branch in the clone
+under $HIVE_PROJECTS, as `fw score` reads them; --from DIR reads a single
+named target from DIR instead, say a branch not yet merged, whose proof
+counts once main has the same files). Each is
 copied to a work dir and run through `fw build`, `fw host-test` and `fw qemu`
 (after `fw build --qemu` when its pins give QEMU its own sdkconfig). Then
 proof/<name>.json records each stage's verdict, the IDF it ran with, and a
@@ -95,20 +97,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--from", dest="src", type=Path, help="the one named target's files, from here")
     a = ap.parse_args(argv)
     tg = score.targets()
-    found = score.firmware()
+    tmp = tempfile.TemporaryDirectory(prefix="fw-main-")
+    found = score.firmware(Path(tmp.name))
     names = a.names or list(found)
     if a.src and (len(names) != 1 or names[0] not in tg):
         ap.error("--from takes exactly one target name from targets.json")
     (ROOT / "proof").mkdir(exist_ok=True)
     bad = 0
     for n in names:
-        src = a.src.resolve() if a.src else found.get(n)
-        if src is None:
-            print(f"fw check-all: {n}: not on this machine ({score.target_dir(tg[n])}); skipped")
+        src = a.src.resolve() if a.src else found.get(n, f"no firmware {n}")
+        if isinstance(src, str):
+            print(f"fw check-all: {n}: {src}; skipped")
+            bad += 1
             continue
         rec = check(n, src, tg[n].get("pins", {}) if n in tg else None, a.keep)
         (ROOT / "proof" / f"{n}.json").write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
         bad += sum(v != "pass" for v in rec["stages"].values())
+    tmp.cleanup()
     return 1 if bad else 0
 
 
