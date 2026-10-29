@@ -180,10 +180,12 @@ def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
         if (want_ref and ref != want_ref) or (not want_ref and not is_esp32(value, name)):
             continue
         gpios: dict[int, str | None] = {}
+        table = re.search(r"WROOM-32|WROVER", (value + name).upper()) and not re.search(
+            r"ESP32-?(S\d|C\d|H\d|P\d)", (value + name).upper())
         for pad in kids(fp, "pad"):
             num = pad[1] if len(pad) > 1 else ""
             fn = val(pad, "pinfunction")
-            g = gpio_of(fn) if fn else (MODULE_PADS.get(int(num)) if num.isdigit() else None)
+            g = gpio_of(fn) if fn else (MODULE_PADS.get(int(num)) if table and num.isdigit() else None)
             if g is None:
                 continue
             net = kids(pad, "net")
@@ -352,6 +354,9 @@ def check(project: Path, cfg: dict) -> dict:
                             " found; pinmap.ref names the one")
             return res
         esp = found[0]
+        # the flash and PSRAM pins below are the ESP32's; an S2/S3/C3's differ
+        classic = not re.search(r"ESP32-?(S\d|C\d|H\d|P\d)", esp.part.upper())
+        flash = FLASH if classic else set()
         rows = []
         used = set()
         for p in pins:
@@ -359,9 +364,9 @@ def check(project: Path, cfg: dict) -> dict:
             have = esp.gpios.get(g, "absent")
             row = {**p, "net": have if have != "absent" else None, "verdict": "pass", "why": ""}
             want = nets.get(name)
-            if g in FLASH:
+            if g in flash:
                 row["verdict"], row["why"] = "fail", f"GPIO{g} is the module's flash"
-            elif g in PSRAM and esp.psram:
+            elif g in PSRAM and esp.psram and classic:
                 row["verdict"], row["why"] = "fail", f"GPIO{g} is the {esp.part}'s PSRAM"
             elif have == "absent":
                 row["verdict"], row["why"] = "fail", f"{esp.ref} has no GPIO{g} pin"
