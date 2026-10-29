@@ -26,5 +26,74 @@
                  {"get": "/api/v1/state", "expect": "\"volume\":40,"},
                  {"get": "/api/v1/nothing", "status": 404}]}
     }
+  },
+  "hifi-plus": {
+    "project": "hifi-receiver-2",
+    "path": "firmware",
+    "about": "The hifi receiver's Plus firmware: hifi-lite's tree built for the core board (HIFI_BOARD=core: firmware/board/core). One zone, and a sub DAC on I2S1 that QEMU (no I2S) never starts.",
+    "pins": {
+      "idf": "v4.4.8",
+      "target": "esp32",
+      "host_tests": "test",
+      "prepare": "sh tools/fetch.sh {src}",
+      "python": ["setuptools<70", "protobuf>=3.20,<4", "grpcio-tools>=1.48,<1.49"],
+      "env": {"HIFI_BOARD": "core"},
+      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 240, "settle": 10,
+               "expect": "hifi: hifi-plus on core, firmware",
+               "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", "CONFIG_ESP32_REV_MIN=0",
+                             "# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set", "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"],
+               "eth": "emac",
+               "nvs": {"settings": {"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18"}}},
+               "adc1": 0,
+               "wifi": "off",
+               "boot": "ota_0",
+               "http": [
+                 {"get": "/api/v1/info", "expect": "\"model\":\"hifi-plus\",\"board\":\"core\".*\"zones\":1,\"eth\":true"},
+                 {"get": "/api/v1/state", "expect": "^\\{\"uptime_s\":\\d+,\"power\":\\{\"state\":\"wait_pd\""},
+                 {"post": "/api/v1/volume", "json": {"volume": 40}, "expect": "\"volume\":40,"},
+                 {"post": "/api/v1/volume", "json": {"volume": 400}, "status": 400},
+                 {"get": "/api/v1/state", "expect": "\"volume\":40,"},
+                 {"post": "/api/v1/sub", "json": {"level_db": -40}, "status": 400},
+                 {"post": "/api/v1/input", "json": {"input": "dj_direct"}, "expect": "\"input\":\"dj_direct\""},
+                 {"get": "/api/v1/state", "expect": "\"input\":\"dj_direct\""},
+                 {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "status": 404},
+                 {"get": "/api/v1/selftest", "expect": "\"pass\":"},
+                 {"get": "/api/v1/nothing", "status": 404}]}
+    }
+  },
+  "hifi-ultra": {
+    "project": "hifi-receiver-2",
+    "path": "firmware",
+    "about": "The hifi receiver's Ultra firmware: the core board with the ultra-front board, hifi-lite's tree built with HIFI_BOARD=ultra (firmware/board/ultra). Two zones.",
+    "pins": {
+      "idf": "v4.4.8",
+      "target": "esp32",
+      "host_tests": "test",
+      "prepare": "sh tools/fetch.sh {src}",
+      "python": ["setuptools<70", "protobuf>=3.20,<4", "grpcio-tools>=1.48,<1.49"],
+      "env": {"HIFI_BOARD": "ultra"},
+      "qemu": {"psram": "4M", "flash": "8MB", "timeout": 240, "settle": 10,
+               "expect": "hifi: hifi-ultra on core, firmware",
+               "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", "CONFIG_ESP32_REV_MIN=0",
+                             "# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set", "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"],
+               "eth": "emac",
+               "nvs": {"settings": {"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18"}}},
+               "adc1": 0,
+               "wifi": "off",
+               "boot": "ota_0",
+               "http": [
+                 {"get": "/api/v1/info", "expect": "\"model\":\"hifi-ultra\",\"board\":\"core\".*\"zones\":2,\"eth\":true"},
+                 {"get": "/api/v1/state", "expect": "^\\{\"uptime_s\":\\d+,\"power\":\\{\"state\":\"wait_pd\""},
+                 {"post": "/api/v1/volume", "json": {"volume": 40}, "expect": "\"volume\":40,"},
+                 {"post": "/api/v1/volume", "json": {"volume": 400}, "status": 400},
+                 {"get": "/api/v1/state", "expect": "\"volume\":40,"},
+                 {"post": "/api/v1/sub", "json": {"level_db": -40}, "status": 400},
+                 {"post": "/api/v1/input", "json": {"input": "dj_direct"}, "expect": "\"input\":\"dj_direct\""},
+                 {"get": "/api/v1/state", "expect": "\"input\":\"dj_direct\""},
+                 {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "expect": "\"ok\":true"},
+                 {"get": "/api/v1/state", "expect": "\"zone_b\":\\{\"on\":true"},
+                 {"get": "/api/v1/selftest", "expect": "\"pass\":"},
+                 {"get": "/api/v1/nothing", "status": 404}]}
+    }
   }
 }
