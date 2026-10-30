@@ -63,7 +63,7 @@
                  {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
                  {"get": "/api/v1/nothing", "status": 404}]},
       "constraints": {"sdkconfig": "board/core/sdkconfig.defaults", "partitions": "board/core/partitions.csv",
-                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/core/*.h", "patches/*.patch"],
+                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/esp/board_core.c", "components/hifi/core/*.h", "patches/*.patch"],
                       "when": "HIFI_PLUS", "board": "../boards/core/kicad/core.net",
                       "ignore": ["EXP_LED"]}
     }
@@ -102,7 +102,7 @@
                  {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
                  {"get": "/api/v1/nothing", "status": 404}]},
       "constraints": {"sdkconfig": "board/core/sdkconfig.defaults", "partitions": "board/core/partitions.csv",
-                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/core/*.h", "patches/*.patch"],
+                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/esp/board_core.c", "components/hifi/core/*.h", "patches/*.patch"],
                       "when": "HIFI_ULTRA", "board": "../boards/core/kicad/core.net",
                       "ignore": ["EXP_LED"]}
     }

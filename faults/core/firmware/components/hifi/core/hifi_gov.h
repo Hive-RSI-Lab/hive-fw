@@ -33,6 +33,12 @@ typedef struct {
 	float tau_s;       /* power averaging */
 	float attack_s, release_s;
 	float min_gain;    /* never attenuate more than this (linear) */
+	/* the charger's current limit acts on milliseconds, and the PVDD bulk
+	 * can't carry a bass half-cycle: the input over one audio block (~5-20
+	 * ms) is held at or under peak_frac of the contract. Its peak decays
+	 * over peak_hold_s, so the gain doesn't follow the bass waveform */
+	float peak_frac;
+	float peak_hold_s;
 	/* thermal limit: speaker power of one stereo amp, both channels, averaged
 	 * over thermal_tau_s; 0 = none. For an amp the board cools without a
 	 * heatsink, whose continuous power is below what the supply allows */
@@ -43,12 +49,14 @@ typedef struct {
 
 typedef struct {
 	hifi_gov_cfg_t cfg;
-	float vsupply, budget_w;
+	float vsupply, budget_w, contract_w;
 	float p_out_pre;   /* averaged speaker power before the limiter */
 	float p_out_slow;  /* the same over thermal_tau_s */
+	float p_out_peak;  /* the loudest block's power, decaying over peak_hold_s */
 	float ms_avg;      /* averaged mean square, both channels, for the level */
 	float gain;        /* applied now */
 	float target;
+	float trim;        /* a ceiling on the gain from outside (an amp's OTW): 1 none */
 	bool limiting;
 	uint32_t events;
 	int amps;          /* stereo amps playing the program: Ultra's zone B makes 2 */

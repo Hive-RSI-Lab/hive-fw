@@ -1,5 +1,5 @@
 {
- "about": "Planted faults on a copy of the hifi receiver's Lite firmware and board (hifi-receiver-2 main a7f32da). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site (the signal, setting or partition it breaks); a second fault of the same kind at the same site counts once.",
+ "about": "Planted faults on a copy of the hifi receiver's Lite firmware and board (hifi-receiver-2 main b485714). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site (the signal, setting or partition it breaks); a second fault of the same kind at the same site counts once.",
  "faults": [
   {
    "id": "amp-sdz-wrong-gpio",
@@ -521,6 +521,20 @@
      "file": "boards/lite-main/kicad/lite-main.net",
      "find": "SWAP",
      "replace": "\"RXD_3\""
+    }
+   ]
+  },
+  {
+   "id": "line-divider-stale",
+   "expect": "ADC-DIVIDER",
+   "site": "LINE_DIVIDER",
+   "about": "the line in's scale left at the old -6 dB attenuator's 2.0 after the board took 15k over 10k (R30/R31 = 2.5)",
+   "from": "hifi-receiver-2 review-3 R3-DIGITAL-5 / R3-AUDIO-5, fixed in b485714 (LINE_DIVIDER 2.0f -> 2.5f)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define LINE_DIVIDER 2.5f",
+     "replace": "#define LINE_DIVIDER 2.0f"
     }
    ]
   }

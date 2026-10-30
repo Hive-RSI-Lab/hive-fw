@@ -18,6 +18,8 @@
 #define PIN_AMP_FAULTZ 23 /* TPA3118 FAULTZ, open drain, low = fault */
 #define ADC_VBUS ADC1_CHANNEL_6 /* GPIO34, VBUS / 11 (100k over 10k) */
 #define VBUS_DIVIDER 11.0f
+#define ADC_PVDD ADC1_CHANNEL_3 /* GPIO39 (SENSOR_VN), PVDD_SENSE: PVDD / 11 (R17 100k over R18 10k) */
+#define PVDD_DIVIDER 11.0f
 
 #define I2C_PORT 0       /* shared with squeezelite's codec driver */
 #define I2C_SDA 33
@@ -56,11 +58,13 @@
 #define ES8388_ADCPOWER_CAPTURE 0x08 /* inputs and ADCs on, mic bias off */
 
 /* The loopback taps: each speaker's + leg through 100k over 10k into LIN2/RIN2.
- * lite-main rev A has no taps (they come with the board rev the review task
- * 261029-020622 builds); set HIFI_HAS_TAPS for that rev or "hifi_taps"=1 in NVS. */
+ * The board the review-2 ECO built (and every one since) has them: R66-R69,
+ * C81-C84. "hifi_taps"=0 in NVS turns them off for a board without. */
 #ifndef HIFI_HAS_TAPS
-#define HIFI_HAS_TAPS 0
+#define HIFI_HAS_TAPS 1
 #endif
-#define TAP_DIVIDER 11.0f      /* 100k + 10k over 10k */
+/* 100k over 10k, loaded by the ES8388's LIN2/RIN2 input: 0.0625 of the
+ * speaker leg (firmware requirement L6, review-2 AUDIO-13) */
+#define TAP_DIVIDER 16.0f
 #define ADC_FS_PEAK_V 1.27f    /* ES8388 ADC full scale at 0 dB PGA, about 0.9 Vrms: calibrate at bring-up */
-#define LINE_DIVIDER 2.0f      /* the line in's -6 dB attenuator (R30/R31) */
+#define LINE_DIVIDER 2.5f      /* the line in's 15k over 10k (R30/R31, review-2 AUDIO-7) */

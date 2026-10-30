@@ -2,9 +2,16 @@
   "constraints": {
     "sdkconfig": "firmware/board/core/sdkconfig.defaults",
     "partitions": "firmware/board/core/partitions.csv",
-    "sources": ["firmware/components/hifi/esp/hifi_board_core.h", "firmware/components/hifi/core/*.h", "firmware/patches/*.patch"],
+    "sources": [
+      "firmware/components/hifi/esp/hifi_board_core.h",
+      "firmware/components/hifi/esp/board_core.c",
+      "firmware/components/hifi/core/*.h",
+      "firmware/patches/*.patch"
+    ],
     "when": "HIFI_PLUS",
     "board": "boards/core/kicad/core.net",
-    "ignore": ["EXP_LED"]
+    "ignore": [
+      "EXP_LED"
+    ]
   }
 }
