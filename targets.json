@@ -57,7 +57,7 @@
                  {"post": "/api/v1/input", "json": {"input": "dj_direct"}, "expect": "\"input\":\"dj_direct\""},
                  {"get": "/api/v1/state", "expect": "\"input\":\"dj_direct\""},
                  {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "status": 404},
-                 {"get": "/api/v1/selftest", "expect": "\"pass\":"},
+                 {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
                  {"get": "/api/v1/nothing", "status": 404}]}
     }
   },
@@ -92,7 +92,7 @@
                  {"get": "/api/v1/state", "expect": "\"input\":\"dj_direct\""},
                  {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "expect": "\"ok\":true"},
                  {"get": "/api/v1/state", "expect": "\"zone_b\":\\{\"on\":true"},
-                 {"get": "/api/v1/selftest", "expect": "\"pass\":"},
+                 {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
                  {"get": "/api/v1/nothing", "status": 404}]}
     }
   }
