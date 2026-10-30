@@ -76,6 +76,33 @@ class Firmware(Fixture):
         self.assertIn((27, "bck"), names("HIFI_LITE"))
         self.assertIn((2, "bck"), names("HIFI_PLUS"))
 
+    def test_without_when_the_boards_own_sdkconfig_picks_its_lines(self):
+        # the hifi receiver's case: one Kconfig patch with Lite, Plus and Ultra
+        # defaults, fw.json naming only the Lite board, board/<name>/sdkconfig.defaults
+        (self.fw / "hooks.patch").write_text(PATCH + '+\t\t\tdefault "model=I2S,bck=2,ws=4" if HIFI_PLUS || HIFI_ULTRA\n'
+                                             '+\t\t\tdefault "sda=13,scl=14" if !HIFI_LITE\n')
+        names = lambda cfg: {(p["gpio"], p["name"]) for p in
+                             pins.firmware_pins(self.fw, ["*.patch"], pins.resolve_when(self.fw, cfg))}
+        cfg = {"board": "../boards/lite-main/kicad/lite-main.kicad_pcb", "sources": ["*.patch"]}
+        self.assertIn((2, "bck"), names(cfg))  # no sdkconfig: every line counts
+        for b, on in (("lite-main", "HIFI_LITE"), ("core", "HIFI_PLUS")):
+            (self.fw / "board" / b).mkdir(parents=True)
+            (self.fw / "board" / b / "sdkconfig.defaults").write_text(
+                f"CONFIG_{on}=y\n# CONFIG_{'HIFI_PLUS' if on == 'HIFI_LITE' else 'HIFI_LITE'} is not set\n")
+        self.assertEqual(pins.board_sdkconfig(self.fw, cfg), self.fw / "board/lite-main/sdkconfig.defaults")
+        got = names(cfg)
+        self.assertNotIn((2, "bck"), got)
+        self.assertNotIn((13, "sda"), got)
+        self.assertIn((27, "bck"), got)
+        got = names({**cfg, "board": "../boards/core/kicad/core.net"})
+        self.assertIn((2, "bck"), got)
+        self.assertIn((13, "sda"), got)
+        self.assertNotIn((27, "bck"), got)
+        self.assertIn((27, "bck"), names({**cfg, "when": "HIFI_LITE"}))  # a named when still wins
+        self.assertFalse(pins.cond_holds("A && !B", {"A": True, "B": True}))
+        self.assertTrue(pins.cond_holds("(A || B) && !C", {"B": True}))
+        self.assertTrue(pins.cond_holds("FOO = y", {}))  # unread: counts
+
 
 class Board(Fixture):
     def test_gpio_names(self):

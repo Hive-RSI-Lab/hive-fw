@@ -39,7 +39,9 @@ ignore:
                     "when": "HIFI_PLUS",
                     "board": "../boards/core/kicad/core.net"}
 
-Defaults: sdkconfig, else sdkconfig.defaults; the partition table the
+Defaults: sdkconfig, else sdkconfig.defaults, else the one
+sdkconfig.defaults in a folder named for the board; when, the symbols that
+sdkconfig sets (a `default ... if COND` line counts when COND holds); the partition table the
 sdkconfig names, beside it or in the project; sources **/*.h, **/*.c,
 **/*.patch. The build is --build, else the project's build/ (or the
 prepared tree's, fw build).
@@ -216,13 +218,12 @@ def memory(build: Path | None) -> dict:
             "image": binf.stat().st_size if binf.is_file() else None}
 
 
-def source_lines(project: Path, globs: list[str], when: str | None):
+def source_lines(project: Path, globs: list[str], when):
     """(where, line) over the sources, a patch's added lines only, a Kconfig
-    `default ... if COND` line only when COND names `when`."""
-    lines = pins.source_lines(project, globs)
-    for where, line in lines:
-        cond = re.search(r"\sif\s+([^\"]+?)\s*$", line)
-        if when and cond and not re.search(rf"\b{re.escape(when)}\b", cond.group(1)):
+    `default ... if COND` line only when COND holds (pins.cond_holds)."""
+    for where, line in pins.source_lines(project, globs):
+        cond = pins.cond_of(line)
+        if cond and not pins.cond_holds(cond, when):
             continue
         yield where, line
 
@@ -273,11 +274,7 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         problems.append({"code": code, "about": about, "problem": text, "from": where})
 
     target = fwpins.get("target", fwlib.DEFAULT_TARGET)
-    sdk_path = None
-    for c in ([cfg["sdkconfig"]] if cfg.get("sdkconfig") else ["sdkconfig", "sdkconfig.defaults"]):
-        if (project / c).is_file():
-            sdk_path = project / c
-            break
+    sdk_path = pins.board_sdkconfig(project, cfg)
     sdk = read_sdkconfig(sdk_path)
     sdk_from = (str(sdk_path.relative_to(project)) if sdk_path.is_relative_to(project) else str(sdk_path)) \
         if sdk_path else "the IDF's defaults"
@@ -387,7 +384,7 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
 
     # pins and peripherals
     sources = cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"]
-    when = cfg.get("when")
+    when = pins.resolve_when(project, cfg)
     ignore = set(cfg.get("ignore") or [])
     fw_pins = [p for p in pins.firmware_pins(project, sources, when) if p["name"] not in ignore]
     lines = list(source_lines(project, sources, when))
