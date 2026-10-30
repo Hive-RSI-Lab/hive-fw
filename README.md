@@ -6,8 +6,8 @@ It is a handful of small commands that agents combine as they need, not a
 pipeline.
 
 - `bin/fw` runs the commands: `setup`, `doctor`, `build`, `idf`,
-  `host-test`, `qemu`, `flash`, `monitor`, `ports`, `bootlog`, `test`,
-  `check-all` and `score`.
+  `host-test`, `qemu`, `flash`, `monitor`, `ports`, `bootlog`, `constraints`,
+  `test`, `check-all` and `score`.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.
 - `host/unity/` is Unity v2.6.0, for host unit tests ([NOTICE](NOTICE)).

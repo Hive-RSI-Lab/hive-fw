@@ -161,6 +161,62 @@ usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp::1234` and
 `xtensa-esp32-elf-gdb -ex 'target remote :1234' -ex 'thread apply all bt'`
 to see where. That's how the ADC wait was found.
 
+## What the firmware needs from the board
+
+`fw constraints` puts everything the firmware takes for granted about the
+hardware into one report, so the board is designed against it instead of
+discovering it at bring-up. Each line says where in the firmware it comes
+from. It reads files only, needs no IDF and takes about a second, so the
+board side can run it on every change:
+
+    $HIVE_MODULES/hive-fw/bin/fw constraints --target hifi-plus          # the text report
+    $HIVE_MODULES/hive-fw/bin/fw constraints --target hifi-plus --json   # the same as data
+    $HIVE_MODULES/hive-fw/bin/fw constraints FIRMWARE_DIR --board my.net --out fw-constraints.json
+
+What it reads, and the needs it turns that into:
+
+- **The sdkconfig**: the chip and its lowest revision; flash size; PSRAM
+  (and whether the firmware aborts without it); the crystal; Wi-Fi and
+  Bluetooth, which mean an antenna keep-out and a 3.3 V supply that gives
+  500 mA or more for transmit peaks; the brown-out threshold the rail has
+  to stay above.
+- **The partition table**: where it ends, against the flash size. With a
+  build (`--build`, or the project's own `build/`), it also checks the app
+  image against its partitions (the OTA slots, or else the factory one) and
+  gives DRAM, IRAM, flash and PSRAM use from the ELF.
+- **The sources**: the GPIOs the firmware drives (read by `fw pins`'s
+  reader), each against the ESP32's rules: the flash pins (6-11) and a
+  WROVER's PSRAM pins (16/17) are taken; 34-39 are input only, with no
+  pull-ups inside; strapping levels at reset (GPIO0 high, GPIO2 low or
+  floating, GPIO12 low for 3.3 V flash); ADC2 reads nothing while Wi-Fi is
+  on. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
+  internal EMAC's fixed pins (19, 21, 22, 25, 26, 27, and the clock on
+  0/16/17) on the list. The report also lists the I2C addresses the firmware
+  talks to (`#define X_ADDR 0x48`: the board's address straps have to match)
+  and the I2C bus speed, which sizes the pull-ups. Every report adds UART0,
+  EN and GPIO0 for flashing.
+- **The board**, when one is named (`--board`, or the config's `board`): the
+  ESP32 part's name against the module needs (ESP32-WROVER-E-N8R8 means
+  8 MB of flash, 8 MB of PSRAM, a v3 chip), and the pin map against its nets
+  (`fw pins`'s check).
+
+Each finding is either a **need** (something the board must provide) or a
+**problem** (something the firmware or the board breaks). The command exits
+0 with no problems, 1 with one, and 2 when there was nothing to read. Where
+to look is set by `constraints` in fw.json or in a target's pins;
+`pinmap`'s keys fill in what it leaves out:
+
+    "constraints": {"sdkconfig": "board/core/sdkconfig.defaults",
+                    "partitions": "board/core/partitions.csv",
+                    "sources": ["components/hifi/esp/hifi_board_core.h", "patches/*.patch"],
+                    "when": "HIFI_PLUS",            (Kconfig `default ... if X` lines for this board only)
+                    "board": "../boards/core/kicad/core.net",
+                    "ignore": ["EXP_LED"]}          (names that aren't GPIOs: an expander's bit)
+
+The pins and board sections need `scripts/pins.py` (fw pins). An fw
+without it still reports the module, flash, memory, Ethernet and I2C needs,
+and says the pins weren't read.
+
 ## Boards
 
 A board plugged into this machine isn't visible inside a sandbox. `fw ports`
