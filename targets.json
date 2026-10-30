@@ -24,7 +24,10 @@
                  {"post": "/api/v1/volume", "json": {"volume": 40}, "expect": "\"volume\":40,"},
                  {"post": "/api/v1/volume", "json": {"volume": 400}, "status": 400},
                  {"get": "/api/v1/state", "expect": "\"volume\":40,"},
-                 {"get": "/api/v1/nothing", "status": 404}]}
+                 {"get": "/api/v1/nothing", "status": 404}]},
+      "constraints": {"sdkconfig": "board/lite-main/sdkconfig.defaults", "partitions": "board/lite-main/partitions.csv",
+                      "sources": ["components/hifi/esp/hifi_board_lite.h", "components/hifi/core/*.h", "patches/*.patch"],
+                      "when": "HIFI_LITE", "board": "../boards/lite-main/kicad/lite-main.net"}
     }
   },
   "hifi-plus": {
@@ -58,7 +61,11 @@
                  {"get": "/api/v1/state", "expect": "\"input\":\"dj_direct\""},
                  {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "status": 404},
                  {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
-                 {"get": "/api/v1/nothing", "status": 404}]}
+                 {"get": "/api/v1/nothing", "status": 404}]},
+      "constraints": {"sdkconfig": "board/core/sdkconfig.defaults", "partitions": "board/core/partitions.csv",
+                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/core/*.h", "patches/*.patch"],
+                      "when": "HIFI_PLUS", "board": "../boards/core/kicad/core.net",
+                      "ignore": ["EXP_LED"]}
     }
   },
   "hifi-ultra": {
@@ -93,7 +100,11 @@
                  {"post": "/api/v1/zone", "json": {"zone": "b", "on": true}, "expect": "\"ok\":true"},
                  {"get": "/api/v1/state", "expect": "\"zone_b\":\\{\"on\":true"},
                  {"post": "/api/v1/selftest", "expect": "\"name\":\"expander_i2c\",\"pass\":false.*\"name\":\"psram\",\"pass\":true"},
-                 {"get": "/api/v1/nothing", "status": 404}]}
+                 {"get": "/api/v1/nothing", "status": 404}]},
+      "constraints": {"sdkconfig": "board/core/sdkconfig.defaults", "partitions": "board/core/partitions.csv",
+                      "sources": ["components/hifi/esp/hifi_board_core.h", "components/hifi/core/*.h", "patches/*.patch"],
+                      "when": "HIFI_ULTRA", "board": "../boards/core/kicad/core.net",
+                      "ignore": ["EXP_LED"]}
     }
   }
 }
