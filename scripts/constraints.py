@@ -10,37 +10,43 @@ second, so it can run on every board change:
 
   - module: the chip, its lowest revision, flash size, PSRAM (and whether
     the firmware aborts without it), crystal, CPU clock, Wi-Fi/Bluetooth
-    (an antenna keep-out, and the 3.3 V supply's peak current);
-  - flash: the partition table against the flash size, and with a build,
-    the app image against its partitions;
+    (an antenna keep-out, and the 3.3 V supply's peak current); the PSRAM's
+    clock against the flash's, and Classic Bluetooth (A2DP) against a
+    BLE-only controller;
+  - flash: the partition table against the flash size (otadata's size, an
+    nvs partition big enough and named nvs), and with a build, the app
+    image against its partitions;
   - memory: with a build, the ELF's DRAM, IRAM, flash and PSRAM use;
   - pins: the GPIOs the firmware drives (fw pins reads them), each with the
     ESP32's rules for that pin: flash and PSRAM pins taken, input-only
     34-39, strapping levels at reset, ADC2 dead while Wi-Fi runs, the
     internal EMAC's fixed RMII pins, UART0 and GPIO0/EN for flashing;
-  - i2c: the device addresses the firmware talks to (address straps) and
-    the bus speed (pull-up size).
+  - i2c: the device addresses the firmware talks to (address straps; a
+    known codec's address checked against its datasheet's, so an 8-bit
+    address shows) and the bus speed (pull-up size).
   - expander: an I2C I/O expander's bits (#define EXP_AMP_FAULT 8 is its
     P10; "expander_prefix" in the config, default EXP_) and its direction
     registers (#define EXP_CFG0 0x00, 1 = input).
 
 With a board (--board, or the config's board, a .net, .kicad_sch or
 .kicad_pcb), it also checks the board's ESP32 part against the module
-needs (flash, PSRAM, revision) and the pin map against the board's nets
-(fw pins' check), the board's I/O expander (a TCA/PCA95xx, PCF857x,
-MCP230xx in its netlist) against the expander bits (each on the net its
-name matches, its address straps among the addresses the firmware tries,
-each output set as an output and each input as an input), and the audio
-path: the codec's MCLK on GPIO0, 1 or 3
+needs (flash, PSRAM, revision, a module's 40 MHz crystal) and the pin map
+against the board's nets (fw pins' check), the board's I/O expander (a
+TCA/PCA95xx, PCF857x, MCP230xx in its netlist) against the expander bits
+(each on the net its name matches, its address straps among the addresses
+the firmware tries, each output set as an output and each input as an
+input), and the audio path: the codec's MCLK on GPIO0, 1 or 3
 (the only pins the ESP32 puts I2S MCLK out on; the firmware's MCLK pin too),
 the ESP32's I2S data out on a part's data in and its data in on a part's
 data out, each I2C part's address from its part number and its address
 straps (no two at one address on a bus, and the firmware's *_ADDR the one
 the board straps). The audio checks read the other parts' pin names, which
-a netlist or schematic has and a KiCad 10 layout's pads don't. Each
-finding is a need (what the board must provide) or a problem (the firmware
-or the board breaks one); exit 0 with no problems, 1 with one, 2 when there
-was nothing to read.
+a netlist or schematic has and a KiCad 10 layout's pads don't. From a
+netlist, also the resistors and capacitors around the ESP32: EN's reset
+RC, UART0's TX meeting the USB-UART's RX, I2C pull-ups, and buttons whose
+input nothing pulls. Each finding is a need (what the board must provide)
+or a problem (the firmware or the board breaks one); exit 0 with no
+problems, 1 with one, 2 when there was nothing to read.
 
 Where to look comes from "constraints" in the project's fw.json, or in a
 target's pins in targets.json (a target's files are PROJECT, default its
@@ -119,6 +125,16 @@ I2C_PARTS = [
 # a part's I2S data pins, by name: what it drives, what it reads
 I2S_DATA_OUT = {"SDOUT", "ASDOUT", "ADCDAT", "SDO", "DOUT", "DATA_OUT"}
 I2S_DATA_IN = {"SDIN", "DSDIN", "DACDAT", "SDI", "DIN", "DATA_IN"}
+# audio parts' 7-bit I2C addresses (their datasheets; the address pins pick within each set)
+I2C_ADDRS = {
+    "ES8388": {0x10, 0x11}, "ES8311": {0x18, 0x19}, "ES8156": {0x08, 0x09}, "ES7210": {0x40, 0x41, 0x42, 0x43},
+    "WM8960": {0x1A}, "WM8978": {0x1A}, "AC101": {0x1A}, "PCM512X": {0x4C, 0x4D, 0x4E, 0x4F},
+    "PCM5122": {0x4C, 0x4D, 0x4E, 0x4F}, "PCM5142": {0x4C, 0x4D, 0x4E, 0x4F}, "TAS57XX": {0x4C, 0x4D, 0x4E, 0x4F},
+    "TAS5754": {0x4C, 0x4D, 0x4E, 0x4F}, "TAS5756": {0x4C, 0x4D, 0x4E, 0x4F}, "TAS5805M": {0x2C, 0x2D, 0x2E, 0x2F},
+    "TAS5825M": {0x4C, 0x4D, 0x4E, 0x4F},
+}
+# Espressif's modules carry a 40 MHz crystal
+MODULES = r"WROOM|WROVER|SOLO-1|MINI-1|PICO-(?:D4|V3)"
 OUTPUT_WORDS = {"OUT", "DOUT", "DO", "TX", "TXD", "BCK", "BCLK", "WS", "LRCK", "MCK", "MCLK", "SCL", "SDA",
                 "MDC", "MDIO", "LED", "GREEN", "RED", "RST", "RESET", "EN", "SDZ", "CS", "MOSI", "SCK",
                 "SCLK", "MUTE", "AMP", "CLK"}
@@ -197,6 +213,13 @@ def table_problems(table: list[dict], table_offset: int = 0x8000) -> list[tuple[
         out.append(("PART-OTA", "OTA app slots but no otadata partition: the bootloader can't switch slots"))
     if not any(p["type"] == "app" for p in table):
         out.append(("PART-BAD", "no app partition"))
+    for p in table:
+        if p["type"] == "data" and p["subtype"] == "ota" and p["size"] != 0x2000:
+            out.append(("PART-OTADATA", f"{p['name']} is {p['size']:#x}: otadata must be 0x2000 (two 4 KB sectors, "
+                        "one per boot record), and gen_esp32part refuses any other size"))
+        if p["type"] == "data" and p["subtype"] == "nvs" and p["size"] < 0x3000:
+            out.append(("PART-NVS", f"{p['name']} is {p['size']:#x}, under the 0x3000 (three 4 KB pages) NVS needs: "
+                        "it keeps a page empty for its garbage collection"))
     return out
 
 
@@ -440,6 +463,49 @@ def expander_problems(e, bits: list[dict], addrs: dict | None, cfg: dict[int, tu
     return out
 
 
+def board_problems(esp, fw_pins: list[dict], buttons: list, mod: dict, problem, where: str) -> None:
+    """What a board read from its netlist breaks: the ESP32's reset, its
+    serial port, the crystal, I2C pull-ups and buttons left floating."""
+    en = esp.other.get("EN", esp.other.get("CHIP_PU", "absent"))
+    if en != "absent":
+        miss = [x for x, have in (("pull-up to 3.3 V", any(to == "up" for _, to in esp.pulls.get(en, []))),
+                                  ("capacitor to ground", en in esp.caps)) if not have]
+        if en is None or miss:
+            problem("POWER-EN", "power", f"{esp.ref}'s EN ({en or 'unconnected'}) has no {' and no '.join(miss)}: "
+                    "the chip needs EN held low until 3.3 V settles and then pulled high (Espressif: 10 kΩ up and "
+                    "1 µF down), or it starts on a sagging rail and may not boot", where)
+    for g, own, other in ((1, "TX", "RX"), (3, "RX", "TX")):
+        net = esp.gpios.get(g, "absent")
+        if net == "absent":
+            continue
+        peers = [(r, fn) for r, fn in esp.nets.get(net, []) if r != esp.ref] if net else []
+        if not peers:
+            problem("UART0", "board", f"GPIO{g} (U0{own}D) reaches nothing ({net or 'unconnected'}): fw flash and the boot "
+                    "log need UART0 at a USB-UART or a header", where)
+            continue
+        words = lambda fn: set(re.split(r"[^A-Z0-9]+", re.sub(r"_\d+$", "", fn.upper())))  # noqa: E731
+        same = [r for r, fn in peers if words(fn) & {own, own + "D", "U0" + own + "D", own + "D0"}]
+        cross = [r for r, fn in peers if words(fn) & {other, other + "D", "U0" + other + "D", other + "D0"}]
+        if same and not cross:
+            problem("UART0", "board", f"GPIO{g} (U0{own}D, {net}) goes to {', '.join(same)}'s {own} pin: {own} must "
+                    f"meet {other}, so nothing can flash the board or read its log", where)
+    if mod.get("xtal_mhz") == 26 and re.search(MODULES, esp.part.upper()):
+        problem("CLOCK-XTAL", "module", f"the firmware is built for a 26 MHz crystal, but {esp.ref} {esp.part} has "
+                "40 MHz: every clock (UART baud, Wi-Fi, Bluetooth, I2S) runs 1.54 times off", where)
+    for p in fw_pins:
+        net = esp.gpios.get(p["gpio"])
+        if net and pins.tokens(p["name"]) & {"SDA", "SCL"} and not any(to == "up" for _, to in esp.pulls.get(net, [])):
+            problem("I2C-PULLUP", "board", f"GPIO{p['gpio']} {p['name']} ({net}) has no pull-up on the board: the "
+                    "ESP32's own (about 45 kΩ) is too weak for I2C, so the bus misreads or hangs", p["where"])
+    for g, act, pull, w in buttons:
+        net = esp.gpios.get(g)
+        if not net or esp.pulls.get(net) or (pull and g not in INPUT_ONLY):
+            continue
+        why = "GPIO34-39 have no internal pulls" if g in INPUT_ONLY else "the firmware turns the internal pull off"
+        problem("PIN-FLOAT", "board", f"the {act} button on GPIO{g} ({net}) has no pull resistor on the board and {why}: "
+                "the input floats and presses itself", w)
+
+
 def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = None) -> dict:
     needs: list[dict] = []
     problems: list[dict] = []
@@ -524,6 +590,9 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
             problem("PART-FLASH", "flash", f"the partition table ends at {endp:#x}, past the {flash // (1 << 20)} MB flash", tbl_from)
         for code, text in table_problems(table, table_offset):
             problem(code, "flash", text, tbl_from)
+        if sdk_path and (wifi or bt) and not any(p["name"] == "nvs" for p in table):
+            problem("PART-NVS", "flash", "no partition named nvs: nvs_flash_init() opens the one labelled nvs, and "
+                    "Wi-Fi and Bluetooth keep their calibration and settings there, so neither starts", tbl_from)
 
     # memory
     mem = memory(build)
@@ -558,6 +627,24 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         if uses:
             problem("SPIRAM-OFF", "module", "PSRAM support is off, but " + ", ".join(uses[:4])
                     + (f" and {len(uses) - 4} more" if len(uses) > 4 else "") + " put data in it", sdk_from)
+
+    # clocks: the PSRAM shares the flash's SPI clock, and can't run faster than it
+    if psram and target == "esp32":
+        ps_mhz = 80 if on("CONFIG_SPIRAM_SPEED_80M") else 40 if on("CONFIG_SPIRAM_SPEED_40M") else None
+        fl_mhz = next((m for m in (80, 40, 26, 20) if on(f"CONFIG_ESPTOOLPY_FLASHFREQ_{m}M")), None)
+        if fl_mhz is None and re.fullmatch(r"\d+m", sdk.get("CONFIG_ESPTOOLPY_FLASHFREQ", "")):
+            fl_mhz = int(sdk["CONFIG_ESPTOOLPY_FLASHFREQ"][:-1])
+        mod["flash_mhz"], mod["psram_mhz"] = fl_mhz, ps_mhz
+        if ps_mhz and fl_mhz and (fl_mhz < ps_mhz or fl_mhz not in (40, 80)):
+            problem("CLOCK-SPI", "module", f"PSRAM at {ps_mhz} MHz with flash at {fl_mhz} MHz: the ESP32's PSRAM driver "
+                    "needs the flash at 40 or 80 MHz and no slower than the PSRAM (#error: \"FLASH speed can only be "
+                    "equal to or higher than SRAM speed\")", f"{sdk_from} CONFIG_SPIRAM_SPEED/CONFIG_ESPTOOLPY_FLASHFREQ")
+    # Bluetooth audio (A2DP) is Classic Bluetooth, which a BLE-only controller drops
+    classic = [k for k in ("CONFIG_BT_CLASSIC_ENABLED", "CONFIG_BT_A2DP_ENABLE", "CONFIG_BT_SINK") if on(k)]
+    if bt and classic and on("CONFIG_BTDM_CTRL_MODE_BLE_ONLY"):
+        problem("BT-CLASSIC", "module", f"the Bluetooth controller is BLE only, but {', '.join(classic)} want Classic "
+                "Bluetooth: Kconfig drops it and A2DP with it, so the product never shows up as a Bluetooth speaker "
+                "(BTDM_CTRL_MODE_BR_EDR_ONLY or _BTDM)", f"{sdk_from} CONFIG_BTDM_CTRL_MODE_BLE_ONLY")
 
     # pins and peripherals
     sources = cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"]
@@ -602,6 +689,19 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         for m in re.finditer(r'(?:sda=\d+,scl=\d+[^"]*?speed=(\d+))', s.replace('\\"', '"')):
             periph.setdefault("i2c_hz", int(m.group(1)))
             need("i2c", f"I2C pull-ups sized for {int(m.group(1)) // 1000} kHz on the bus's capacitance", w)
+    for w, s in lines:
+        m = re.search(r"\bmodel=(\w+)[^\"]*?\bi2c=(\d+)", s.replace('\\"', '"'))
+        if m:
+            i2c.append({"device": m.group(1), "addr": [f"{int(m.group(2)):#04x}"], "where": w, "about": "dac_config i2c="})
+    for d in i2c:
+        part = next((k for k in I2C_ADDRS if re.fullmatch(k.replace("X", r"\w"), d["device"].upper())), None)
+        for a in d["addr"]:
+            n = int(a, 16)
+            if part and n not in I2C_ADDRS[part]:
+                ok = " or ".join(f"{x:#04x}" for x in sorted(I2C_ADDRS[part]))
+                problem("I2C-ADDR", "i2c", f"{d['device']} at {n:#04x}, but a {part} answers only at {ok}"
+                        + (f": {n:#04x} is its 8-bit (write) address, the 7-bit one shifted left" if n >> 1 in I2C_ADDRS[part]
+                           else ""), d["where"])
     fixed: dict[str, list[dict]] = {}
     for d in i2c:
         if len(d["addr"]) == 1:
@@ -634,6 +734,14 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         need("i2c",f"{d['device']} at I2C address {' or '.join(d['addr'])} (set by its address pins)"
              + (f": {d['about']}" if d["about"] else ""), d["where"])
 
+    buttons = []  # squeezelite's buttons: (gpio, action, internal pull on, where)
+    for w, s in lines:
+        for part in re.split(r'"gpio"\s*:\s*', s.replace('\\"', '"'))[1:]:
+            g = re.match(r"(\d+)", part)
+            pull = re.search(r'"pull"\s*:\s*(true|false)', part.split("}", 1)[0])
+            act = re.search(r'"(ACTRLS_\w+)"', part)
+            if g:
+                buttons.append((int(g.group(1)), act.group(1) if act else "button", bool(pull and pull.group(1) == "true"), w))
     rows, straps = [], {}
     for p in sorted(fw_pins, key=lambda p: (p["gpio"], p["name"])):
         g, words = p["gpio"], pins.tokens(p["name"])
@@ -709,6 +817,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                         problem(f"STRAP-{g}", "board", f"{', '.join(rs)} pulls GPIO{g} ({net}) {bad}: {STRAPS[g]}", str(path))
             audio_problems(esp, fw_pins, i2c, target, problem, str(path))
             bd["i2c"] = i2c_parts(esp)
+            if target == "esp32" and esp.netlist:
+                board_problems(esp, fw_pins, buttons, mod, problem, str(path))
             boards.append(bd)
         if files:
             res = pins.check(project, {**cfg, "board": files})

@@ -143,10 +143,15 @@ class Board:
 
     def __init__(self, path: Path, ref: str, part: str, gpios: dict[int, str | None], psram: bool,
                  pulls: dict[str, list[tuple[str, str]]] | None = None,
-                 parts: dict[str, str] | None = None, nets: dict[str, list[tuple[str, str]]] | None = None):
+                 parts: dict[str, str] | None = None, nets: dict[str, list[tuple[str, str]]] | None = None,
+                 caps: dict | None = None, other: dict | None = None):
         self.path, self.ref, self.part, self.gpios, self.psram = path, ref, part, gpios, psram
         self.pulls = pulls or {}
         self.parts, self.nets = parts or {}, nets or {}
+        # from a netlist only (netlist is False for a schematic or layout): net -> [(capacitor, value)]
+        # to ground and the ESP32's other pins (EN, ...) -> net
+        self.netlist = caps is not None
+        self.caps, self.other = caps or {}, other or {}
 
 
 SUPPLY = re.compile(r"\+?(?:3V3|3\.3V|VCC|VDD)\w*", re.I)
@@ -167,7 +172,8 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
         for c in kids(comps_node, "comp"):
             comps[val(c, "ref")] = (val(c, "value"), val(c, "footprint"))
     found: dict[str, dict[int, str | None]] = {}
-    res_nets: dict[str, list[str | None]] = {}
+    other: dict[str, dict[str, str | None]] = {}
+    two_nets: dict[str, list[str | None]] = {}
     all_nets: dict[str, list[tuple[str, str]]] = {}
     for nets in kids(root, "nets"):
         for n in kids(nets, "net"):
@@ -176,25 +182,33 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
                 ref = val(node, "ref")
                 if name:
                     all_nets.setdefault(name, []).append((ref, val(node, "pinfunction")))
-                if re.fullmatch(r"R\d+", ref):
-                    res_nets.setdefault(ref, []).append(name)
+                if re.fullmatch(r"[RC]\d+", ref):
+                    two_nets.setdefault(ref, []).append(name)
                 value, fp = comps.get(ref, ("", ""))
                 if (want_ref and ref != want_ref) or (not want_ref and not is_esp32(value, fp)):
                     continue
                 g = gpio_of(val(node, "pinfunction"))
                 if g is None:
+                    fn = re.sub(r"_\d+$", "", val(node, "pinfunction").upper())
+                    if fn:
+                        other.setdefault(ref, {})[fn] = name
                     continue
                 found.setdefault(ref, {})[g] = name
     pulls: dict[str, list[tuple[str, str]]] = {}
-    for ref, ns in sorted(res_nets.items()):
+    caps: dict[str, list[tuple[str, str]]] = {}
+    for ref, ns in sorted(two_nets.items()):
         if len(ns) != 2 or None in ns:
             continue
         for a, b in (ns, ns[::-1]):
-            to = "up" if SUPPLY.fullmatch(b) else "down" if GROUND.fullmatch(b) else None
-            if to and not (SUPPLY.fullmatch(a) or GROUND.fullmatch(a)):
-                pulls.setdefault(a, []).append((ref, to))
+            if SUPPLY.fullmatch(a) or GROUND.fullmatch(a):
+                continue
+            if ref[0] == "R" and (SUPPLY.fullmatch(b) or GROUND.fullmatch(b)):
+                pulls.setdefault(a, []).append((ref, "up" if SUPPLY.fullmatch(b) else "down"))
+            elif ref[0] == "C" and GROUND.fullmatch(b):
+                caps.setdefault(a, []).append((ref, comps.get(ref, ("", ""))[0]))
     parts = {r: v for r, (v, _) in comps.items()}
-    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls, parts, all_nets)
+    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls, parts, all_nets,
+                  caps, other.get(r, {}))
             for r, g in sorted(found.items())]
 
 
