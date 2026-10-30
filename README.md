@@ -7,7 +7,7 @@ pipeline.
 
 - `bin/fw` runs the commands: `setup`, `doctor`, `build`, `idf`,
   `host-test`, `qemu`, `flash`, `monitor`, `ports`, `bootlog`, `lint`,
-  `test`, `check-all` and `score`.
+  `constraints`, `test`, `check-all` and `score`.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.
 - `host/unity/` is Unity v2.6.0, for host unit tests ([NOTICE](NOTICE)).

@@ -1,9 +1,10 @@
 {
- "about": "Planted faults on a copy of the hifi receiver's Lite firmware and board (hifi-receiver-2 main a7f32da). Each edit's find must occur exactly once; expect is the check meant to catch it.",
+ "about": "Planted faults on a copy of the hifi receiver's Lite firmware and board (hifi-receiver-2 main a7f32da). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site (the signal, setting or partition it breaks); a second fault of the same kind at the same site counts once.",
  "faults": [
   {
    "id": "amp-sdz-wrong-gpio",
    "expect": "PIN-NET",
+   "site": "PIN_AMP_SDZ",
    "about": "the amp's shutdown on GPIO22, where the board has the LED",
    "edits": [
     {
@@ -16,6 +17,7 @@
   {
    "id": "i2s-bck-ws-swapped",
    "expect": "PIN-NET",
+   "site": "I2S BCK/WS",
    "about": "I2S bit clock and word select swapped in the DAC config",
    "edits": [
     {
@@ -28,6 +30,7 @@
   {
    "id": "pvdd-en-unconnected",
    "expect": "PIN-NET",
+   "site": "PIN_PVDD_EN",
    "about": "the PVDD switch driven on GPIO5, a pad the board leaves open",
    "edits": [
     {
@@ -40,6 +43,7 @@
   {
    "id": "i2c-sda-on-flash",
    "expect": "PIN-FLASH",
+   "site": "I2C_SDA",
    "about": "I2C SDA on GPIO7, the module's flash data line",
    "edits": [
     {
@@ -52,6 +56,7 @@
   {
    "id": "pd-pg-on-psram",
    "expect": "PIN-FLASH",
+   "site": "PIN_PD_PG",
    "about": "the PD good input on GPIO16, the WROVER's PSRAM chip select",
    "edits": [
     {
@@ -64,6 +69,7 @@
   {
    "id": "pvdd-en-on-input-only",
    "expect": "PIN-INPUT",
+   "site": "PIN_PVDD_EN",
    "about": "the PVDD enable output on GPIO39 (the PVDD sense net, input only)",
    "edits": [
     {
@@ -76,6 +82,7 @@
   {
    "id": "amp-sdz-on-strap12",
    "expect": "STRAP-12",
+   "site": "PIN_AMP_SDZ",
    "about": "the amp's shutdown moved to GPIO12 on board and firmware alike: a strap pin",
    "edits": [
     {
@@ -103,6 +110,7 @@
   {
    "id": "vbus-on-adc2",
    "expect": "ADC2-WIFI",
+   "site": "ADC_VBUS",
    "about": "VBUS sense moved to GPIO15 (ADC2) on board and firmware alike, with Wi-Fi on",
    "edits": [
     {
@@ -130,6 +138,7 @@
   {
    "id": "button-volup-on-play",
    "expect": "PIN-SHARED",
+   "site": "button VOLUP",
    "about": "the volume-up button on GPIO19, the play button's",
    "edits": [
     {
@@ -142,6 +151,7 @@
   {
    "id": "led-on-open-pad",
    "expect": "PIN-NET",
+   "site": "LED",
    "about": "the LED on GPIO2, a pad the board leaves open",
    "edits": [
     {
@@ -154,6 +164,7 @@
   {
    "id": "board-dout-lrck-swapped",
    "expect": "PIN-NET",
+   "site": "board I2S DOUT/LRCK",
    "about": "the board swaps I2S DOUT and LRCK at the module (a board fault the firmware meets)",
    "edits": [
     {
@@ -176,6 +187,7 @@
   {
    "id": "ota1-overlaps-settings",
    "expect": "PART-OVERLAP",
+   "site": "ota_1",
    "about": "ota_1 grown into the settings partition",
    "edits": [
     {
@@ -188,6 +200,7 @@
   {
    "id": "flash-size-4mb",
    "expect": "PART-FLASH",
+   "site": "CONFIG_ESPTOOLPY_FLASHSIZE",
    "about": "the image built for 4 MB flash with an 8 MB table",
    "edits": [
     {
@@ -200,6 +213,7 @@
   {
    "id": "ota0-misaligned",
    "expect": "PART-ALIGN",
+   "site": "ota_0",
    "about": "ota_0 at an offset not on a 64 KB boundary",
    "edits": [
     {
@@ -212,6 +226,7 @@
   {
    "id": "image-over-slot",
    "expect": "PART-IMAGE",
+   "site": "ota_0",
    "about": "ota_0 shrunk under the 2.77 MB main app",
    "edits": [
     {
@@ -224,6 +239,7 @@
   {
    "id": "no-otadata",
    "expect": "PART-OTA",
+   "site": "otadata",
    "about": "two OTA slots and no otadata",
    "edits": [
     {
@@ -236,6 +252,7 @@
   {
    "id": "nvs-over-table",
    "expect": "PART-OVERLAP",
+   "site": "nvs",
    "about": "nvs moved onto the partition table",
    "edits": [
     {
@@ -248,6 +265,7 @@
   {
    "id": "psram-off-on-wrover",
    "expect": "SPIRAM-OFF",
+   "site": "CONFIG_ESP32_SPIRAM_SUPPORT",
    "about": "PSRAM support off while the firmware puts Bluetooth's buffers in PSRAM",
    "edits": [
     {
