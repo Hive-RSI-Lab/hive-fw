@@ -1,0 +1,50 @@
+name: ci
+# fw's per-change test (.hive/project.json "test": bin/fw test) on GitHub's standard hosted
+# runner of this public repo, free without a minute cap; no larger or paid runners (the
+# person, 10-29 13:37: "go with stuff that has no caps or high caps"). The Hive reads this
+# job's check as "test (ubuntu-latest)" (forge_tests in .hive/project.json); keep it unnamed.
+# The suite is standard-library python plus cc, ar and git, all on the stock runner; no
+# ESP-IDF or QEMU is needed (those are bin/fw check-all and score, run by the Hive).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  # A PR's superseded run is cancelled; every push to main gets a group of its own.
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: the suite (bin/fw test)
+        shell: bash
+        run: |
+          set -o pipefail
+          bin/fw test 2>&1 | tee "$RUNNER_TEMP/suite.log"
+        env:
+          GIT_AUTHOR_NAME: ci
+          GIT_AUTHOR_EMAIL: ci@localhost
+          GIT_COMMITTER_NAME: ci
+          GIT_COMMITTER_EMAIL: ci@localhost
+      # Job logs need a login; annotations don't, so the Hive can read what failed.
+      - name: name the failing tests
+        if: failure()
+        shell: bash
+        run: |
+          grep -n -e '^FAIL: ' -e '^ERROR: ' "$RUNNER_TEMP/suite.log" | head -20 | while IFS=: read -r n _; do
+            echo "::error::$(sed -n "$n,$((n + 30))p" "$RUNNER_TEMP/suite.log" | awk 'BEGIN { ORS = "%0A" } { gsub(/\r/, ""); gsub(/%/, "%25"); print substr($0, 1, 300) }')"
+          done

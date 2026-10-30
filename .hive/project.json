@@ -1,4 +1,5 @@
 {
   "test": "bin/fw test",
+  "forge_tests": ["test (ubuntu-latest)"],
   "score": {"command": "bin/fw score", "direction": "higher", "tolerance": 0, "paths": ["scripts/score.py", "scripts/check_all.py"]}
 }
