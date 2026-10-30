@@ -24,9 +24,16 @@ second, so it can run on every board change:
 With a board (--board, or the config's board, a .net, .kicad_sch or
 .kicad_pcb), it also checks the board's ESP32 part against the module
 needs (flash, PSRAM, revision) and the pin map against the board's nets
-(fw pins' check). Each finding is a need (what the board must provide) or
-a problem (the firmware or the board breaks one); exit 0 with no problems,
-1 with one, 2 when there was nothing to read.
+(fw pins' check), and the audio path: the codec's MCLK on GPIO0, 1 or 3
+(the only pins the ESP32 puts I2S MCLK out on; the firmware's MCLK pin too),
+the ESP32's I2S data out on a part's data in and its data in on a part's
+data out, each I2C part's address from its part number and its address
+straps (no two at one address on a bus, and the firmware's *_ADDR the one
+the board straps). The audio checks read the other parts' pin names, which
+a netlist or schematic has and a KiCad 10 layout's pads don't. Each
+finding is a need (what the board must provide) or a problem (the firmware
+or the board breaks one); exit 0 with no problems, 1 with one, 2 when there
+was nothing to read.
 
 Where to look comes from "constraints" in the project's fw.json, or in a
 target's pins in targets.json (a target's files are PROJECT, default its
@@ -80,6 +87,29 @@ PSRAM_SWITCHES = {"CONFIG_SPIRAM", "CONFIG_ESP32_SPIRAM_SUPPORT", "CONFIG_SPIRAM
 # the internal EMAC's RMII pins are fixed in silicon (the IO_MUX)
 RMII = {19: "TXD0", 21: "TX_EN", 22: "TXD1", 25: "RXD0", 26: "RXD1", 27: "CRS_DV"}
 RMII_PHYS = r"LAN87\w*|IP101\w*|RTL8201\w*|DP83848\w*|KSZ80\w*"
+# the classic ESP32 routes I2S MCLK out through CLK_OUT1-3 only (the IO_MUX)
+MCLK_PINS = {0: "CLK_OUT1", 1: "CLK_OUT3", 3: "CLK_OUT2"}
+# I2C parts by value: (7-bit base address, the address pins, lowest bit first);
+# each pin's level at the board sets its bit. From each part's datasheet.
+I2C_PARTS = [
+    (r"ES8388|ES8374", 0x10, ["CE"]),
+    (r"ES8311", 0x18, ["CE"]),
+    (r"ES7243", 0x10, ["AD0", "AD1", "AD2"]),
+    (r"ES7210", 0x40, ["AD0", "AD1"]),
+    (r"ES90[123]8", 0x48, ["ADDR"]),
+    (r"PCM51[24]2|PCM52[24]2", 0x4C, ["ADR1", "ADR2"]),
+    (r"[TP]CA95[13]9", 0x74, ["A0", "A1"]),
+    (r"[TP]CA95[35]5|PCA9554|PCF8575", 0x20, ["A0", "A1", "A2"]),
+    (r"PCF8574A", 0x38, ["A0", "A1", "A2"]),
+    (r"PCF8574", 0x20, ["A0", "A1", "A2"]),
+    (r"CH224", 0x22, []),
+    (r"WM8960", 0x1A, []),
+    (r"TLV320AIC32", 0x18, []),
+    (r"SSD1306", 0x3C, ["SA0"]),
+]
+# a part's I2S data pins, by name: what it drives, what it reads
+I2S_DATA_OUT = {"SDOUT", "ASDOUT", "ADCDAT", "SDO", "DOUT", "DATA_OUT"}
+I2S_DATA_IN = {"SDIN", "DSDIN", "DACDAT", "SDI", "DIN", "DATA_IN"}
 OUTPUT_WORDS = {"OUT", "DOUT", "DO", "TX", "TXD", "BCK", "BCLK", "WS", "LRCK", "MCK", "MCLK", "SCL", "SDA",
                 "MDC", "MDIO", "LED", "GREEN", "RED", "RST", "RESET", "EN", "SDZ", "CS", "MOSI", "SCK",
                 "SCLK", "MUTE", "AMP", "CLK"}
@@ -225,6 +255,91 @@ def source_lines(project: Path, globs: list[str], when: str | None):
         if when and cond and not re.search(rf"\b{re.escape(when)}\b", cond.group(1)):
             continue
         yield where, line
+
+
+def pin_names(fn: str) -> set[str]:
+    """A symbol pin's names: "SDOUT/AD2_3" (KiCad's _<pin number>) is SDOUT and AD2."""
+    fn = re.sub(r"_\d+$", "", fn.upper())
+    return {re.sub(r"^~\{(.*)\}$", r"\1", x.strip()) for x in fn.split("/") if x.strip()}
+
+
+def level(esp, net: str | None) -> int | None:
+    """A net's level at reset: 0 ground or pulled down, 1 supply or pulled up."""
+    if not net:
+        return None
+    if pins.GROUND.fullmatch(net):
+        return 0
+    if pins.SUPPLY.fullmatch(net):
+        return 1
+    tos = {to for _, to in esp.pulls.get(net, [])}
+    return {frozenset({"down"}): 0, frozenset({"up"}): 1}.get(frozenset(tos))
+
+
+def i2c_parts(esp) -> list[dict]:
+    """The board's I2C parts that I2C_PARTS knows: ref, part, bus (its SDA
+    net) and address (None when a strap's level can't be read)."""
+    on: dict[str, dict[str, str]] = {}
+    for net, nodes in esp.nets.items():
+        for ref, fn in nodes:
+            for nm in pin_names(fn):
+                on.setdefault(ref, {})[nm] = net
+    out = []
+    for ref, value in sorted(esp.parts.items()):
+        up = value.upper()
+        spec = next(((b, ps) for rx, b, ps in I2C_PARTS if re.match(rx, up)), None)
+        sda = next((on.get(ref, {}).get(n) for n in ("SDA", "CDATA") if on.get(ref, {}).get(n)), None)
+        if not spec or not sda:
+            continue
+        addr: int | None = spec[0]
+        for bit, pin in enumerate(spec[1]):
+            lv = level(esp, on[ref].get(pin))
+            if lv is None:
+                addr = None
+                break
+            addr |= lv << bit
+        out.append({"ref": ref, "part": value, "bus": sda, "addr": addr})
+    return out
+
+
+def audio_problems(esp, fw_pins: list[dict], i2c: list[dict], target: str, problem, path: str) -> None:
+    """The audio path on the board: MCLK on a pin that can carry it, I2S data
+    outputs into inputs, one address per part on each I2C bus, and the
+    firmware's addresses what the board straps."""
+    if target == "esp32":
+        for g, net in sorted(esp.gpios.items()):
+            mck = [r for r, fn in esp.nets.get(net, []) if r != esp.ref
+                   and any(re.search(r"\bMCLK\b|\bMCK\b", n) for n in pin_names(fn))] if net else []
+            if mck and g not in MCLK_PINS:
+                problem("I2S-MCLK", "board", f"{', '.join(mck)}'s MCLK is on GPIO{g} ({net}): the ESP32 puts I2S MCLK "
+                        "out on GPIO0, 1 or 3 only", path)
+    for p in fw_pins:
+        words = pins.tokens(p["name"])
+        net = esp.gpios.get(p["gpio"])
+        if not net or not words & {"DOUT", "DIN"}:
+            continue
+        bad, side = (I2S_DATA_OUT, "out") if "DOUT" in words else (I2S_DATA_IN, "in")
+        for ref, fn in esp.nets.get(net, []):
+            hit = pin_names(fn) & bad
+            if ref != esp.ref and hit:
+                problem("I2S-DIR", "board", f"GPIO{p['gpio']} {p['name']} is the ESP32's I2S data {side}, but {net} goes to "
+                        f"{ref} {esp.parts.get(ref, '')}'s {min(hit)}, also an {side}put: data {side} wants the part's data "
+                        f"{'in' if side == 'out' else 'out'}", p["where"])
+    parts = i2c_parts(esp)
+    by: dict[tuple[str, int], list[dict]] = {}
+    for x in parts:
+        if x["addr"] is not None:
+            by.setdefault((x["bus"], x["addr"]), []).append(x)
+    for (bus, addr), xs in sorted(by.items()):
+        if len(xs) > 1:
+            problem("I2C-CLASH", "board", f"{' and '.join(x['ref'] + ' ' + x['part'] for x in xs)} are all at I2C address "
+                    f"{addr:#04x} on {bus}: one of them needs other address straps", path)
+    for d in i2c:
+        name = re.sub(r"\W", "", d["device"].upper())
+        for x in parts:
+            if x["addr"] is not None and len(name) >= 4 and re.sub(r"\W", "", x["part"].upper()).startswith(name) \
+                    and x["addr"] not in {int(a, 16) for a in d["addr"]}:
+                problem("I2C-ADDR", "board", f"the firmware talks to {d['device']} at {' or '.join(d['addr'])}, but "
+                        f"{x['ref']} {x['part']}'s address straps put it at {x['addr']:#04x}", d["where"])
 
 
 # ---- the report -----------------------------------------------------------
@@ -428,6 +543,18 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         for m in re.finditer(r'(?:sda=\d+,scl=\d+[^"]*?speed=(\d+))', s.replace('\\"', '"')):
             periph.setdefault("i2c_hz", int(m.group(1)))
             need("i2c", f"I2C pull-ups sized for {int(m.group(1)) // 1000} kHz on the bus's capacitance", w)
+    fixed: dict[str, list[dict]] = {}
+    for d in i2c:
+        if len(d["addr"]) == 1:
+            fixed.setdefault(d["addr"][0].lower(), []).append(d)
+    for a, ds in sorted(fixed.items()):
+        if len({d["device"] for d in ds}) > 1:
+            problem("I2C-CLASH", "i2c", f"{' and '.join(d['device'] for d in ds)} are all at I2C address {a}", ds[-1]["where"])
+    if target == "esp32":
+        for p in fw_pins:
+            if "MCLK" in pins.tokens(p["name"]) and p["gpio"] not in MCLK_PINS:
+                problem("I2S-MCLK", "pins", f"GPIO{p['gpio']} {p['name']}: the ESP32 puts I2S MCLK out on GPIO0 (CLK_OUT1), "
+                        "1 (CLK_OUT3) or 3 (CLK_OUT2) only", p["where"])
     for d in i2c:
         need("i2c", f"{d['device']} at I2C address {' or '.join(d['addr'])} (set by its address pins)"
              + (f": {d['about']}" if d["about"] else ""), d["where"])
@@ -505,6 +632,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                     rs = [r for r, to in esp.pulls.get(net, []) if to == bad] if net else []
                     if rs:
                         problem(f"STRAP-{g}", "board", f"{', '.join(rs)} pulls GPIO{g} ({net}) {bad}: {STRAPS[g]}", str(path))
+            audio_problems(esp, fw_pins, i2c, target, problem, str(path))
+            bd["i2c"] = i2c_parts(esp)
             boards.append(bd)
         if files:
             res = pins.check(project, {**cfg, "board": files})

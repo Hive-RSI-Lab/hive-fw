@@ -1,0 +1,82 @@
+{
+ "about": "Planted faults on a copy of the hifi receiver's Plus firmware and core board (hifi-receiver-2 main ac484b1). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site.",
+ "faults": [
+  {
+   "id": "dac-addr-high",
+   "expect": "I2C-ADDR",
+   "site": "ES9018_ADDR",
+   "about": "the ES9018K2M's ADDR tied to 3V3: it answers at 0x49, the firmware talks to 0x48",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U10\")\n\t\t\t\t(pin \"5\")\n\t\t\t\t(pinfunction \"ADDR_5\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U10\")\n\t\t\t\t(pin \"5\")\n\t\t\t\t(pinfunction \"ADDR_5\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "expander-on-pd-address",
+   "expect": "I2C-CLASH",
+   "site": "0x22",
+   "about": "the expander drawn as a TCA9555 (pin 3 is A2 where the TCA9539 has RESET) strapped A2..A0 = 010: 0x22, the CH224Q's address on the same bus",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "(value \"TCA9539\")",
+     "replace": "(value \"TCA9555\")"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U17\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"~{RESET}_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U17\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pinfunction \"A1_2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"U17\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"A2_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U17\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pinfunction \"A1_2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "adc-sdout-on-dac-data",
+   "expect": "I2S-DIR",
+   "site": "ES7243 SDOUT",
+   "about": "the line-in ADC's SDOUT wired to the main DAC's data line, which the ESP32 drives: two outputs on one net",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U13\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"SDOUT/AD2_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"/I2S_DOUT_MAIN\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"/I2S_DOUT_MAIN\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U13\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"SDOUT/AD2_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "fw-adc-at-dac-address",
+   "expect": "I2C-CLASH",
+   "site": "ES7243_ADDR",
+   "about": "the firmware's ES7243 address set to 0x48, the Sabre DAC's: the two can't share one bus",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "ES7243_ADDR 0x10",
+     "replace": "ES7243_ADDR 0x48"
+    }
+   ]
+  }
+ ]
+}

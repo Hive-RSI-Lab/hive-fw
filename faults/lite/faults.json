@@ -302,6 +302,75 @@
      "replace": "# CONFIG_ESP32_SPIRAM_SUPPORT is not set"
     }
    ]
+  },
+  {
+   "id": "mclk-off-clkout",
+   "expect": "I2S-MCLK",
+   "site": "I2S MCLK",
+   "about": "the codec's MCLK moved to GPIO5 on the board and in dac_config: the ESP32 can't put I2S MCLK out there (GPIO0, 1, 3 only), so the ES8388 gets no master clock",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "mck=0\" if HIFI_LITE",
+     "replace": "mck=5\" if HIFI_LITE"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO0_25\"",
+     "replace": "\"SWAP\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO5_29\"",
+     "replace": "\"IO0_25\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"SWAP\"",
+     "replace": "\"IO5_29\""
+    }
+   ]
+  },
+  {
+   "id": "codec-dout-to-asdout",
+   "expect": "I2S-DIR",
+   "site": "I2S data",
+   "about": "the ES8388's DSDIN and ASDOUT swapped on the board: the ESP32's I2S data out drives the codec's ADC output",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"DSDIN_6\"",
+     "replace": "\"SWAP\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"ASDOUT_8\"",
+     "replace": "\"DSDIN_6\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"SWAP\"",
+     "replace": "\"ASDOUT_8\""
+    }
+   ]
+  },
+  {
+   "id": "codec-ce-high",
+   "expect": "I2C-ADDR",
+   "site": "ES8388_ADDR",
+   "about": "the ES8388's CE tied to 3V3: it answers at 0x11, the firmware talks to 0x10",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"26\")\n\t\t\t\t(pinfunction \"CE_26\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"26\")\n\t\t\t\t(pinfunction \"CE_26\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
   }
  ]
 }

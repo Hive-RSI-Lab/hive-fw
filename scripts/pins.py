@@ -133,12 +133,15 @@ def has_psram(value: str, footprint: str) -> bool:
 class Board:
     """The ESP32 on a board: ref, part, GPIO -> net (None: unconnected), and
     from a netlist, net -> [(resistor, "up" or "down")] for the resistors
-    that tie a net to a supply or to ground."""
+    that tie a net to a supply or to ground; the board's other parts (ref ->
+    value) and net -> [(ref, pin name)] for every part's pins."""
 
     def __init__(self, path: Path, ref: str, part: str, gpios: dict[int, str | None], psram: bool,
-                 pulls: dict[str, list[tuple[str, str]]] | None = None):
+                 pulls: dict[str, list[tuple[str, str]]] | None = None,
+                 parts: dict[str, str] | None = None, nets: dict[str, list[tuple[str, str]]] | None = None):
         self.path, self.ref, self.part, self.gpios, self.psram = path, ref, part, gpios, psram
         self.pulls = pulls or {}
+        self.parts, self.nets = parts or {}, nets or {}
 
 
 SUPPLY = re.compile(r"\+?(?:3V3|3\.3V|VCC|VDD)\w*", re.I)
@@ -160,11 +163,14 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
             comps[val(c, "ref")] = (val(c, "value"), val(c, "footprint"))
     found: dict[str, dict[int, str | None]] = {}
     res_nets: dict[str, list[str | None]] = {}
+    all_nets: dict[str, list[tuple[str, str]]] = {}
     for nets in kids(root, "nets"):
         for n in kids(nets, "net"):
             name = net_name(val(n, "name"))
             for node in kids(n, "node"):
                 ref = val(node, "ref")
+                if name:
+                    all_nets.setdefault(name, []).append((ref, val(node, "pinfunction")))
                 if re.fullmatch(r"R\d+", ref):
                     res_nets.setdefault(ref, []).append(name)
                 value, fp = comps.get(ref, ("", ""))
@@ -182,13 +188,28 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
             to = "up" if SUPPLY.fullmatch(b) else "down" if GROUND.fullmatch(b) else None
             if to and not (SUPPLY.fullmatch(a) or GROUND.fullmatch(a)):
                 pulls.setdefault(a, []).append((ref, to))
-    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls)
+    parts = {r: v for r, (v, _) in comps.items()}
+    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls, parts, all_nets)
             for r, g in sorted(found.items())]
 
 
 def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
     root = sexp(text)
     out = []
+    parts: dict[str, str] = {}
+    all_nets: dict[str, list[tuple[str, str]]] = {}
+    for fp in kids(root, "footprint"):
+        ref = value = ""
+        for p in kids(fp, "property"):
+            if len(p) > 2 and p[1] in ("Reference", "Value"):
+                ref, value = (p[2], value) if p[1] == "Reference" else (ref, p[2])
+        parts[ref] = value
+        for pad in kids(fp, "pad"):
+            net = kids(pad, "net")
+            nm = net[0][-1] if net and isinstance(net[0][-1], str) else ""
+            nm = net_name("" if nm.isdigit() and len(net[0]) == 2 else nm)  # (net 0) is no net
+            if nm:
+                all_nets.setdefault(nm, []).append((ref, val(pad, "pinfunction")))
     for fp in kids(root, "footprint"):
         ref = value = ""
         for p in kids(fp, "property"):
@@ -214,7 +235,7 @@ def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
             nm = "" if nm.isdigit() and len(net[0]) == 2 else nm  # (net 0) is no net
             gpios[g] = net_name(nm)
         if gpios:
-            out.append(Board(path, ref, value, gpios, has_psram(value, name)))
+            out.append(Board(path, ref, value, gpios, has_psram(value, name), None, parts, all_nets))
     return out
 
 
