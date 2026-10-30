@@ -70,11 +70,11 @@ class Corpus(unittest.TestCase):
         for b in score.bases():
             for f in json.loads((b / "faults.json").read_text())["faults"]:
                 self.assertTrue(f.get("expect") and f.get("site"), f"{b.name}/{f['id']} needs expect and site")
-        expect = {f["id"]: f["expect"] for b in score.bases()
+        expect = {(b.name, f["id"]): f["expect"] for b in score.bases()
                   for f in json.loads((b / "faults.json").read_text())["faults"]}
         for x in r["results"]:
             if x["caught"]:
-                self.assertIn(expect[x["id"]], x["by"], x["id"])
+                self.assertIn(expect[x["base"], x["id"]], x["by"], x["id"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,417 @@
+diff --git a/components/display/display.c b/components/display/display.c
+index 1e47051..f15a349 100644
+--- a/components/display/display.c
++++ b/components/display/display.c
+@@ -313,10 +313,18 @@ bool displayer_can_artwork(void) {
+ /****************************************************************************************
+  * 
+  */
++/* hifi-receiver: what is playing goes to the receiver's API too, display or not
++ * (components/hifi) */
++extern void hifi_display_metadata(const char *artist, const char *album, const char *title) __attribute__((weak));
++extern void hifi_display_control(int cmd) __attribute__((weak));
++extern void hifi_display_timer(int elapsed, int duration) __attribute__((weak));
++
+ void displayer_metadata(char *artist, char *album, char *title) {
+ 	char *string = displayer.string, *p;
+ 	int len = SCROLLABLE_SIZE;
+ 	
++	if (hifi_display_metadata) hifi_display_metadata(artist, album, title);
++	
+ 	// need a display!
+ 	if (!display) return;
+ 	
+@@ -406,6 +414,8 @@ void displayer_scroll(char *string, int speed, int pause) {
+  * 
+  */
+ void displayer_timer(enum displayer_time_e mode, int elapsed, int duration) {
++	if (hifi_display_timer && mode == DISPLAYER_ELAPSED) hifi_display_timer(elapsed, duration);
++	
+ 	// need a display!
+ 	if (!display) return;
+ 	
+@@ -442,6 +452,8 @@ void displayer_timer(enum displayer_time_e mode, int elapsed, int duration) {
+ void displayer_control(enum displayer_cmd_e cmd, ...) {
+ 	va_list args;
+ 	
++	if (hifi_display_control) hifi_display_control(cmd);
++	
+ 	if (!display) return;
+ 	
+ 	va_start(args, cmd);
+diff --git a/components/services/audio_controls.c b/components/services/audio_controls.c
+index dff7cda..1f4ded9 100644
+--- a/components/services/audio_controls.c
++++ b/components/services/audio_controls.c
+@@ -113,8 +113,14 @@ bool actrls_ir_action(uint16_t addr, uint16_t cmd) {
+ /****************************************************************************************
+  * 
+  */
++/* hifi-receiver: the receiver's learned remote codes and its own volume when
++ * nothing streams (components/hifi) see IR codes and button actions first */
++extern bool hifi_ir_hook(uint16_t addr, uint16_t cmd) __attribute__((weak));
++extern bool hifi_button_hook(int action, bool pressed) __attribute__((weak));
++
+ static void ir_handler(uint16_t addr, uint16_t cmd) {
+ 	ESP_LOGD(TAG, "recaived IR %04hx:%04hx", addr, cmd);
++	if (hifi_ir_hook && hifi_ir_hook(addr, cmd)) return;
+ 	if (current_ir_handler) current_ir_handler(addr, cmd);
+ }
+ 
+@@ -206,6 +212,9 @@ static void control_handler(void *client, button_event_e event, button_press_e p
+ 	
+ 	ESP_LOGD(TAG, "control gpio:%u press:%u long:%u event:%u action:%u", key->gpio, press, long_press, event, action_detail.action);
+ 
++	if (hifi_button_hook && action_detail.action != ACTRLS_NONE &&
++		hifi_button_hook(action_detail.action, event == BUTTON_PRESSED)) return;
++
+ 	// stop here if control hook served the request
+ 	if (current_hook && (*current_hook)(key->gpio, action_detail.action, event, press, long_press)) return;
+     
+diff --git a/components/squeezelite/decode_external.c b/components/squeezelite/decode_external.c
+index b33f70a..f6413cc 100644
+--- a/components/squeezelite/decode_external.c
++++ b/components/squeezelite/decode_external.c
+@@ -54,7 +54,7 @@ static enum { SINK_RUNNING, SINK_ABORT, SINK_DISCARD } sink_state;
+ #define LOCK_D   mutex_lock(decode.mutex);
+ #define UNLOCK_D mutex_unlock(decode.mutex);
+ 
+-enum { DECODE_BT = 1, DECODE_RAOP, DECODE_CSPOT };
++enum { DECODE_BT = 1, DECODE_RAOP, DECODE_CSPOT, DECODE_HIFI_TEST };
+ 
+ extern struct outputstate output;
+ extern struct decodestate decode;
+@@ -120,6 +120,67 @@ static uint32_t sink_data_handler(const uint8_t *data, uint32_t len, int retries
+     return written;
+ }
+ 
++/****************************************************************************************
++ * hifi-receiver: test signals (components/hifi) take the output like a sink does,
++ * at unity gain so their level is what was asked for; the volume comes back after
++ */
++static u32_t hifi_gain_l, hifi_gain_r;
++
++void hifi_sink_start(u32_t rate) {
++	LOCK_D;
++	LOCK_O;
++	if (output.external != DECODE_HIFI_TEST) {
++		hifi_gain_l = output.gainL;
++		hifi_gain_r = output.gainR;
++	}
++	_buf_flush(outputbuf);
++	_buf_limit(outputbuf, 0);
++	output.next_sample_rate = output.current_sample_rate = rate;
++	output.external = DECODE_HIFI_TEST;
++	output.state = OUTPUT_RUNNING;
++	output.frames_played = 0;
++	sink_state = SINK_RUNNING;
++	output.gainL = output.gainR = FIXED_ONE;
++	if (decode.state != DECODE_STOPPED) decode.state = DECODE_ERROR;
++	UNLOCK_O;
++	UNLOCK_D;
++	LOG_INFO("hifi test signal started at %u", rate);
++}
++
++uint32_t hifi_sink_write(const uint8_t *data, uint32_t len) {
++	if (output.external != DECODE_HIFI_TEST) return 0;
++	return sink_data_handler(data, len, 10);
++}
++
++void hifi_sink_stop(void) {
++	LOCK_O;
++	if (output.external == DECODE_HIFI_TEST) {
++		_buf_flush(outputbuf);
++		output.state = OUTPUT_STOPPED;
++		output.external = 0;
++		output.stop_time = gettime_ms();
++		sink_state = SINK_ABORT;
++		output.gainL = hifi_gain_l;
++		output.gainR = hifi_gain_r;
++	}
++	UNLOCK_O;
++}
++
++/* how much test signal is queued ahead of the DAC, so the caller can keep it short */
++uint32_t hifi_sink_queued_ms(void) {
++	if (output.external != DECODE_HIFI_TEST || !output.current_sample_rate) return 0;
++	return (_buf_used(outputbuf) * 1000ULL) / (output.current_sample_rate * BYTES_PER_FRAME);
++}
++
++/* 0 idle, 1 LMS, 2 Bluetooth, 3 AirPlay, 4 Spotify, 5 test signal */
++int hifi_sink_source(void) {
++	if (output.external == DECODE_BT) return 2;
++	if (output.external == DECODE_RAOP) return 3;
++	if (output.external == DECODE_CSPOT) return 4;
++	if (output.external == DECODE_HIFI_TEST) return 5;
++	return output.state > OUTPUT_STOPPED ? 1 : 0;
++}
++
+ /****************************************************************************************
+  * BT sink data handler
+  */
+diff --git a/components/squeezelite/equalizer.c b/components/squeezelite/equalizer.c
+index b02f5f0..6530271 100644
+--- a/components/squeezelite/equalizer.c
++++ b/components/squeezelite/equalizer.c
+@@ -198,7 +198,11 @@ void equalizer_set_loudness(uint8_t loudness) {
+ /****************************************************************************************
+  * process equalizer
+  */
+-void equalizer_process(uint8_t *buf, uint32_t bytes) {
++/* hifi-receiver: the power governor (components/hifi) runs after the
++ * equalizer and loudness, on exactly what goes to I2S (equalizer_process below) */
++extern void hifi_dsp_process(uint8_t *buf, uint32_t frames, int bytes_per_frame, uint32_t rate) __attribute__((weak));
++
++static void equalizer_apply(uint8_t *buf, uint32_t bytes) {
+ #if BYTES_PER_FRAME == 4    
+ 	// don't want to process with output locked, so take the small risk to miss one parametric update
+ 	if (equalizer.update) {
+@@ -231,4 +235,12 @@ void equalizer_process(uint8_t *buf, uint32_t bytes) {
+ 		esp_equalizer_process(equalizer.handle, buf, bytes, equalizer.samplerate, 2);
+ 	}
+ #endif    
+-}
+\ No newline at end of file
++}
++
++/****************************************************************************************
++ * equalizer, then the hifi-receiver power governor on the equalized samples
++ */
++void equalizer_process(uint8_t *buf, uint32_t bytes) {
++	equalizer_apply(buf, bytes);
++	if (hifi_dsp_process) hifi_dsp_process(buf, bytes / BYTES_PER_FRAME, BYTES_PER_FRAME, equalizer.samplerate);
++}
+diff --git a/components/squeezelite/output_embedded.c b/components/squeezelite/output_embedded.c
+index 4bc7d6b..f0e1163 100644
+--- a/components/squeezelite/output_embedded.c
++++ b/components/squeezelite/output_embedded.c
+@@ -115,8 +115,12 @@ void output_close_embedded(void) {
+ 	output_visu_close();
+ }
+ 
+-void set_volume(unsigned left, unsigned right) { 
+-	LOG_DEBUG("setting internal gain left: %u right: %u", left, right);
++/* hifi-receiver: the receiver keeps one volume over every source (components/hifi).
++ * It sees each source's gain first, and may lower it (its maximum, mute) or hold it
++ * (a test signal is playing) */
++extern bool hifi_volume_hook(unsigned *left, unsigned *right) __attribute__((weak));
++
++static void apply_volume(unsigned left, unsigned right) {
+ 	if (!volume_cb || !(*volume_cb)(left, right)) {
+ 		LOCK;
+ 		output.gainL = left;
+@@ -126,6 +130,19 @@ void set_volume(unsigned left, unsigned right) {
+     equalizer_set_volume(left, right);
+ }
+ 
++/* hifi-receiver sets the gain itself (the app, the remote); false until the output is up */
++bool hifi_output_gain(unsigned left, unsigned right) {
++	if (!output.write_cb || !outputbuf->buf) return false;
++	apply_volume(left, right);
++	return true;
++}
++
++void set_volume(unsigned left, unsigned right) { 
++	LOG_DEBUG("setting internal gain left: %u right: %u", left, right);
++	if (hifi_volume_hook && !hifi_volume_hook(&left, &right)) return;
++	apply_volume(left, right);
++}
++
+ bool test_open(const char *device, unsigned rates[], bool userdef_rates) {
+ 	memset(rates, 0, MAX_SUPPORTED_SAMPLERATES * sizeof(unsigned));
+ 	if (!strcasecmp(device, "I2S")) {
+diff --git a/components/squeezelite/output_i2s.c b/components/squeezelite/output_i2s.c
+index ac1343c..865e686 100644
+--- a/components/squeezelite/output_i2s.c
++++ b/components/squeezelite/output_i2s.c
+@@ -216,6 +216,7 @@ static void set_i2s_pin(char *config, i2s_pin_config_t *pin_config) {
+ 	PARSE_PARAM(config, "bck", '=', pin_config->bck_io_num);
+ 	PARSE_PARAM(config, "ws", '=', pin_config->ws_io_num);
+ 	PARSE_PARAM(config, "do", '=', pin_config->data_out_num);
++	PARSE_PARAM(config, "di", '=', pin_config->data_in_num); /* hifi: the codec's ADC, for captures */
+ #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(4, 4, 0)
+     pin_config->mck_io_num = strcasestr(config, "mck") ? 0 : -1;
+     PARSE_PARAM(config, "mck", '=', pin_config->mck_io_num);   
+@@ -294,6 +295,7 @@ void output_init_i2s(log_level level, char *device, unsigned output_buf_size, ch
+     
+ 	// common I2S initialization
+ 	i2s_config.mode = I2S_MODE_MASTER | I2S_MODE_TX;
++	if (i2s_dac_pin.data_in_num >= 0) i2s_config.mode |= I2S_MODE_RX; /* hifi: full duplex, see hifi_capture */
+ 	i2s_config.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
+ 	i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+ 	// in case of overflow, do not replay old buffer
+diff --git a/components/targets/CMakeLists.txt b/components/targets/CMakeLists.txt
+index 9e97b3e..d01b40c 100644
+--- a/components/targets/CMakeLists.txt
++++ b/components/targets/CMakeLists.txt
+@@ -1,4 +1,4 @@
+ idf_component_register( SRC_DIRS . muse
+ 			INCLUDE_DIRS .
+-					    PRIV_REQUIRES services
++					    PRIV_REQUIRES services hifi
+ )
+diff --git a/components/targets/targets.c b/components/targets/targets.c
+index 9f54d36..6b9a636 100644
+--- a/components/targets/targets.c
++++ b/components/targets/targets.c
+@@ -1,7 +1,7 @@
+ #include "string.h"
+ #include "targets.h"
+ 
+-const struct target_s *target_set[] = { &target_muse, NULL };
++const struct target_s *target_set[] = { &target_muse, &target_hifi, NULL };
+ 
+ void target_init(char *target) { 
+ 	for (int i = 0; *target && target_set[i]; i++) if (strcasestr(target_set[i]->model, target)) {
+diff --git a/components/targets/targets.h b/components/targets/targets.h
+index c6f870e..8417a5d 100644
+--- a/components/targets/targets.h
++++ b/components/targets/targets.h
+@@ -20,3 +20,4 @@ struct target_s {
+ };
+ 
+ extern const struct target_s target_muse;
++extern const struct target_s target_hifi;
+diff --git a/components/wifi-manager/wifi_manager_http_server.c b/components/wifi-manager/wifi_manager_http_server.c
+index a667676..3ec6148 100644
+--- a/components/wifi-manager/wifi_manager_http_server.c
++++ b/components/wifi-manager/wifi_manager_http_server.c
+@@ -37,6 +37,9 @@
+ #include "tools.h"
+ static const char TAG[] = "http_server";
+ 
++/* hifi-receiver: the receiver's web app and test API (components/hifi) */
++extern void hifi_http_register(httpd_handle_t server) __attribute__((weak));
++
+ EXT_RAM_ATTR static httpd_handle_t _server;
+ EXT_RAM_ATTR static int _port;
+ EXT_RAM_ATTR rest_server_context_t *rest_context;
+@@ -58,7 +61,7 @@ void register_common_handlers(httpd_handle_t server){
+ 	httpd_register_uri_handler(server, &png_get);	
+ }
+ void register_regular_handlers(httpd_handle_t server){
+-	httpd_uri_t root_get = { .uri = "/", .method = HTTP_GET, .handler = root_get_handler, .user_ctx = rest_context };
++	httpd_uri_t root_get = { .uri = hifi_http_register ? "/squeezelite/" : "/", .method = HTTP_GET, .handler = root_get_handler, .user_ctx = rest_context };
+ 	httpd_register_uri_handler(server, &root_get);
+ 
+ 	httpd_uri_t ap_get = { .uri = "/ap.json", .method = HTTP_GET, .handler = ap_get_handler, .user_ctx = rest_context };
+@@ -125,6 +128,7 @@ void register_regular_handlers(httpd_handle_t server){
+ 
+ 
+ 
++	if (hifi_http_register) hifi_http_register(server);
+ 	ESP_LOGD(TAG,"Registering default error handler for 404");
+ 	httpd_register_err_handler(server, HTTPD_404_NOT_FOUND,&err_handler);
+ 
+@@ -147,7 +151,7 @@ esp_err_t http_server_start()
+     strlcpy(rest_context->base_path, "/res/", sizeof(rest_context->base_path));
+ 
+     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+-    config.max_uri_handlers = 30;
++    config.max_uri_handlers = 48;
+     config.max_open_sockets = 3;
+ 	config.lru_purge_enable = true;
+ 	config.backlog_conn = 1;
+diff --git a/main/Kconfig.projbuild b/main/Kconfig.projbuild
+index 4ade34a..57239c7 100644
+--- a/main/Kconfig.projbuild
++++ b/main/Kconfig.projbuild
+@@ -73,7 +73,24 @@ menu "Squeezelite-ESP32"
+ 				bool "T-WATCH2020 by LilyGo"				
+ 				select I2C_LOCKED		
+ 				select TARGET_LOCKED				
+-		endchoice	
++			config HIFI_LITE
++				bool "hifi-receiver Lite (lite-main board)"
++				select I2C_LOCKED
++				select TARGET_LOCKED
++			config HIFI_PLUS
++				bool "hifi-receiver Plus (core board)"
++				select I2C_LOCKED
++				select TARGET_LOCKED
++			config HIFI_ULTRA
++				bool "hifi-receiver Ultra (core board and ultra-front)"
++				select I2C_LOCKED
++				select TARGET_LOCKED
++		endchoice
++		config HIFI_HOST_NAME
++			string
++			default "hifi-lite" if HIFI_LITE	
++			default "hifi-plus" if HIFI_PLUS
++			default "hifi-ultra" if HIFI_ULTRA
+ 		config RELEASE_API
+ 			string "Software update URL"
+ 			default "https://api.github.com/repos/sle118/squeezelite-esp32/releases"
+@@ -105,6 +122,9 @@ menu "Squeezelite-ESP32"
+ 			default "model=TAS57xx,bck=33,ws=25,do=32,sda=27,scl=26,mute=14:0" if SQUEEZEAMP
+ 			default "model=I2S,bck=26,ws=25,do=33,i2c=53,sda=21,scl=22" if TWATCH2020
+ 			default "model=I2S,bck=5,ws=25,do=26,di=35,i2c=16,sda=18,scl=23,mck" if MUSE
++			default "model=ES8388,bck=27,ws=25,do=26,di=35,sda=33,scl=32,i2c=16,mck=0" if HIFI_LITE
++			default "model=I2S,bck=2,ws=4,do=5,di=36" if HIFI_PLUS
++			default "model=I2S,bck=2,ws=4,do=5,di=36" if HIFI_ULTRA
+ 			default ""
+ 		config SPDIF_CONFIG
+ 			string
+@@ -124,15 +144,18 @@ menu "Squeezelite-ESP32"
+ 			default ""
+ 		config ETH_CONFIG
+ 			string
++			default "model=LAN8720,mdc=23,mdio=18,rst=-1" if HIFI_PLUS || HIFI_ULTRA
+ 			default ""
+ 		# AGGREGATES - end		
+ 		config DAC_CONTROLSET
+ 			string
++			default "{\"init\":[{\"reg\":8,\"val\":0},{\"reg\":2,\"val\":243},{\"reg\":43,\"val\":128},{\"reg\":0,\"val\":5},{\"reg\":1,\"val\":64},{\"reg\":4,\"val\":60},{\"reg\":23,\"val\":24},{\"reg\":24,\"val\":2},{\"reg\":26,\"val\":0},{\"reg\":27,\"val\":0},{\"reg\":25,\"val\":50},{\"reg\":38,\"val\":0},{\"reg\":39,\"val\":184},{\"reg\":42,\"val\":184},{\"reg\":46,\"val\":28},{\"reg\":47,\"val\":28},{\"reg\":48,\"val\":30},{\"reg\":49,\"val\":30},{\"reg\":2,\"val\":170}]}" if HIFI_LITE
+ 			default "{ \"init\": [ {\"reg\":41, \"val\":128}, {\"reg\":18, \"val\":255} ], \"poweron\": [ {\"reg\":18, \"val\":64, \"mode\":\"or\"} ], \"poweroff\": [ {\"reg\":18, \"val\":191, \"mode\":\"and\"} ] }" if TWATCH2020
+ 			default "{\"init\":[ {\"reg\":0,\"val\":128}, {\"reg\":0,\"val\":0}, {\"reg\":25,\"val\":4}, {\"reg\":1,\"val\":80}, {\"reg\":2,\"val\":0},	{\"reg\":8,\"val\":0}, {\"reg\":4,\"val\":192},	{\"reg\":0,\"val\":18}, {\"reg\":1,\"val\":0}, {\"reg\":23,\"val\":24}, {\"reg\":24,\"val\":2}, {\"reg\":38,\"val\":9}, {\"reg\":39,\"val\":144}, {\"reg\":42,\"val\":144}, {\"reg\":43,\"val\":128}, {\"reg\":45,\"val\":128}, {\"reg\":27,\"val\":0}, {\"reg\":26,\"val\":0}, {\"reg\":2,\"val\":240}, {\"reg\":2,\"val\":0},	{\"reg\":29,\"val\":28}, {\"reg\":4,\"val\":60}, {\"reg\":25,\"val\":0}, {\"reg\":46,\"val\":33}, {\"reg\":47,\"val\":33} , {\"reg\":48,\"val\":33}, {\"reg\":49,\"val\":33}]}" if MUSE
+ 			default ""		
+ 		config AUDIO_CONTROLS
+ 			string
++			default "[{\"gpio\":13,\"pull\":false,\"debounce\":30,\"long_press\":1000,\"normal\":{\"pressed\":\"ACTRLS_VOLUP\"},\"longpress\":{\"pressed\":\"ACTRLS_NEXT\"}},{\"gpio\":36,\"pull\":false,\"debounce\":40,\"long_press\":1000,\"normal\":{\"pressed\":\"ACTRLS_VOLDOWN\"},\"longpress\":{\"pressed\":\"ACTRLS_PREV\"}},{\"gpio\":19,\"pull\":false,\"debounce\":30,\"long_press\":1000,\"normal\":{\"pressed\":\"ACTRLS_TOGGLE\"},\"longpress\":{\"pressed\":\"ACTRLS_POWER\"}}]" if HIFI_LITE
+ 			default "[{\"gpio\":32, \"pull\":true, \"long_press\":1000, \"normal\":{\"pressed\":\"ACTRLS_VOLDOWN\"}, \"longpress\":{\"pressed\":\"ACTRLS_PREV\"}}, {\"gpio\":19, \"pull\":true, \"long_press\":1000, \"normal\":{\"pressed\":\"ACTRLS_VOLUP\"}, \"longpress\":{\"pressed\":\"ACTRLS_NEXT\"}}, {\"gpio\":12, \"pull\":true, \"long_press\":1000, \"normal\":{\"pressed\":\"ACTRLS_TOGGLE\"},\"longpress\":{\"pressed\":\"ACTRLS_POWER\"}}]" if MUSE
+ 			default ""
+ 		config BAT_CONFIG
+@@ -143,6 +166,9 @@ menu "Squeezelite-ESP32"
+ 		config TARGET
+ 			string
+ 			default "muse" if MUSE
++			default "hifi-lite" if HIFI_LITE
++			default "hifi-plus" if HIFI_PLUS
++			default "hifi-ultra" if HIFI_ULTRA
+ 			default ""			
+ 		config AMP_GPIO		
+ 			int
+@@ -175,6 +201,9 @@ menu "Squeezelite-ESP32"
+ 		config SET_GPIO
+ 			string
+ 			default "0=ir" if SQUEEZEAMP
++			default "14=ir:nec,22=green:1" if HIFI_LITE
++			default "35=ir:nec" if HIFI_PLUS
++			default "35=ir:nec" if HIFI_ULTRA
+ 			default "" if TWATCH2020
+ 	endmenu
+ 
+@@ -344,6 +373,7 @@ menu "Squeezelite-ESP32"
+ 		visible if !TWATCH2020
+ 		config I2C_CONFIG
+ 			string "I2C system configuration"
++			default "sda=13,scl=14,speed=400000,port=1" if HIFI_PLUS || HIFI_ULTRA
+ 			default ""
+ 			help
+ 				Set parameters of shared I2C interface
+diff --git a/main/esp_app_main.c b/main/esp_app_main.c
+index 37ffe96..35b04f4 100644
+--- a/main/esp_app_main.c
++++ b/main/esp_app_main.c
+@@ -301,7 +301,11 @@ void register_default_nvs(){
+ #ifdef CONFIG_BT_SINK
+ 	register_default_with_mac("bt_name", CONFIG_BT_NAME);
+ #endif
++#ifdef CONFIG_HIFI_HOST_NAME
++	register_default_string_val("host_name", CONFIG_HIFI_HOST_NAME);
++#else
+ 	register_default_with_mac("host_name", DEFAULT_HOST_NAME);
++#endif
+ 	register_default_with_mac("ap_ssid", CONFIG_DEFAULT_AP_SSID);
+ 	register_default_with_mac("autoexec1",CONFIG_DEFAULT_COMMAND_LINE " -n " DEFAULT_HOST_NAME);	
+     for (int i = 0; i < sizeof(defaultStringVals) / sizeof(DefaultStringVal); ++i) {

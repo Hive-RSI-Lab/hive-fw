@@ -1,0 +1,368 @@
+{
+ "about": "Planted faults on a copy of the hifi receiver's core board (Plus and Ultra) firmware and netlist (hifi-receiver-2 main ac484b1, Plus's config: HIFI_PLUS). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site.",
+ "faults": [
+  {
+   "id": "sub-dout-on-ffc-dc",
+   "expect": "PIN-NET",
+   "site": "PIN_I2S_DOUT_SUB",
+   "about": "the sub DAC's I2S data on GPIO15, which the board gives the FFC's LCD_DC (ultra-front J3)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define PIN_I2S_DOUT_SUB 12",
+     "replace": "#define PIN_I2S_DOUT_SUB 15"
+    }
+   ]
+  },
+  {
+   "id": "i2s-bck-ws-swapped",
+   "expect": "PIN-NET",
+   "site": "I2S BCK/WS",
+   "about": "I2S bit clock and word select swapped in Plus's DAC config",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "bck=2,ws=4,do=5,di=36\" if HIFI_PLUS",
+     "replace": "bck=4,ws=2,do=5,di=36\" if HIFI_PLUS"
+    }
+   ]
+  },
+  {
+   "id": "i2c-sda-scl-swapped",
+   "expect": "PIN-NET",
+   "site": "I2C SDA/SCL",
+   "about": "the system I2C's SDA and SCL swapped in the core boards' I2C config",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "sda=13,scl=14,speed=400000,port=1\" if HIFI_PLUS",
+     "replace": "sda=14,scl=13,speed=400000,port=1\" if HIFI_PLUS"
+    }
+   ]
+  },
+  {
+   "id": "isense-on-ir",
+   "expect": "PIN-NET",
+   "site": "ADC_ISENSE",
+   "about": "the INA186 current sense read on ADC1 channel 7 (GPIO35, the IR receiver) instead of 6 (GPIO34)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define ADC_ISENSE ADC1_CHANNEL_6",
+     "replace": "#define ADC_ISENSE ADC1_CHANNEL_7"
+    }
+   ]
+  },
+  {
+   "id": "dac-dout-on-ffc-mosi",
+   "expect": "PIN-NET",
+   "site": "do",
+   "about": "the Sabre's I2S data on GPIO33, the FFC's LCD_MOSI, in Plus's DAC config",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "bck=2,ws=4,do=5,di=36\" if HIFI_PLUS",
+     "replace": "bck=2,ws=4,do=33,di=36\" if HIFI_PLUS"
+    }
+   ]
+  },
+  {
+   "id": "exp-int-on-psram",
+   "expect": "PIN-FLASH",
+   "site": "PIN_EXP_INT",
+   "about": "the expander's INT read on GPIO16, the WROVER's PSRAM chip select",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define PIN_EXP_INT 39",
+     "replace": "#define PIN_EXP_INT 16"
+    }
+   ]
+  },
+  {
+   "id": "sub-dout-on-input-only",
+   "expect": "PIN-INPUT",
+   "site": "PIN_I2S_DOUT_SUB",
+   "about": "the sub DAC's data output on GPIO34, input only (the current sense)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define PIN_I2S_DOUT_SUB 12",
+     "replace": "#define PIN_I2S_DOUT_SUB 34"
+    }
+   ]
+  },
+  {
+   "id": "sub-dout-on-rmii",
+   "expect": "PIN-RMII",
+   "site": "PIN_I2S_DOUT_SUB",
+   "about": "the sub DAC's data on GPIO22 (lite-main's LED pin), the EMAC's RMII TXD1 on core",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define PIN_I2S_DOUT_SUB 12",
+     "replace": "#define PIN_I2S_DOUT_SUB 22"
+    }
+   ]
+  },
+  {
+   "id": "isense-on-adc2",
+   "expect": "ADC2-WIFI",
+   "site": "ADC_ISENSE",
+   "about": "the current sense on ADC2 channel 6, dead while Wi-Fi runs",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define ADC_ISENSE ADC1_CHANNEL_6",
+     "replace": "#define ADC_ISENSE ADC2_CHANNEL_6"
+    }
+   ]
+  },
+  {
+   "id": "sub-dout-pulled-up-strap12",
+   "expect": "STRAP-12",
+   "site": "GPIO12 pull",
+   "about": "a pull-up on I2S_DOUT_SUB (GPIO12, MTDI): the module boots for 1.8 V flash and doesn't start",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R900\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"/I2S_DOUT_SUB\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"/I2S_DOUT_SUB\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R900\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "eth-clk-pulled-down-strap0",
+   "expect": "STRAP-0",
+   "site": "GPIO0 pull (R31)",
+   "about": "R31 on ETH_CLK (GPIO0) tied to GND instead of +3V3: every reset enters download mode",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R31\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"GND\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"GND\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R31\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "bck-pulled-up-strap2",
+   "expect": "STRAP-2",
+   "site": "GPIO2 pull",
+   "about": "a pull-up on I2S_BCK (GPIO2): serial download won't start",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R901\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(name \"/I2S_BCK\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"/I2S_BCK\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R901\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "module-wroom-no-psram",
+   "expect": "BOARD-PSRAM",
+   "site": "U7 module",
+   "about": "U7 swapped to an ESP32-WROOM-32E-N8 (no PSRAM); the firmware aborts without it",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "(ref \"U7\")\n\t\t\t(value \"ESP32-WROVER-E-N8R8\")",
+     "replace": "(ref \"U7\")\n\t\t\t(value \"ESP32-WROOM-32E-N8\")"
+    }
+   ]
+  },
+  {
+   "id": "module-4mb-flash",
+   "expect": "BOARD-FLASH",
+   "site": "U7 flash",
+   "about": "U7 swapped to an ESP32-WROVER-E-N4R8: 4 MB of flash under the 8 MB table",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "(ref \"U7\")\n\t\t\t(value \"ESP32-WROVER-E-N8R8\")",
+     "replace": "(ref \"U7\")\n\t\t\t(value \"ESP32-WROVER-E-N4R8\")"
+    }
+   ]
+  },
+  {
+   "id": "ota1-overlaps-settings",
+   "expect": "PART-OVERLAP",
+   "site": "ota_1",
+   "about": "ota_1 grown to 0x320000, over the settings partition",
+   "edits": [
+    {
+     "file": "firmware/board/core/partitions.csv",
+     "find": "ota_1,    app,  ota_1,   0x4E0000, 0x310000,",
+     "replace": "ota_1,    app,  ota_1,   0x4E0000, 0x320000,"
+    }
+   ]
+  },
+  {
+   "id": "flash-size-4mb",
+   "expect": "PART-FLASH",
+   "site": "CONFIG_ESPTOOLPY_FLASHSIZE",
+   "about": "the build set for 4 MB of flash under core's 8 MB table",
+   "edits": [
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_ESPTOOLPY_FLASHSIZE=\"8MB\"",
+     "replace": "CONFIG_ESPTOOLPY_FLASHSIZE=\"4MB\""
+    }
+   ]
+  },
+  {
+   "id": "ota0-misaligned",
+   "expect": "PART-ALIGN",
+   "site": "ota_0",
+   "about": "ota_0 at 0x1C8000, off the 64 KB app alignment",
+   "edits": [
+    {
+     "file": "firmware/board/core/partitions.csv",
+     "find": "ota_0,    app,  ota_0,   0x1D0000, 0x310000,",
+     "replace": "ota_0,    app,  ota_0,   0x1C8000, 0x310000,"
+    }
+   ]
+  },
+  {
+   "id": "no-otadata",
+   "expect": "PART-OTA",
+   "site": "otadata",
+   "about": "the otadata partition dropped while two OTA slots remain",
+   "edits": [
+    {
+     "file": "firmware/board/core/partitions.csv",
+     "find": "otadata,  data, ota,     0xD000,   0x2000,\n",
+     "replace": ""
+    }
+   ]
+  },
+  {
+   "id": "psram-off-on-wrover",
+   "expect": "SPIRAM-OFF",
+   "site": "CONFIG_ESP32_SPIRAM_SUPPORT",
+   "about": "PSRAM support turned off while the settings that use it stay on",
+   "edits": [
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_SPIRAM_SUPPORT=y",
+     "replace": "# CONFIG_ESP32_SPIRAM_SUPPORT is not set"
+    }
+   ]
+  },
+  {
+   "id": "amp-fault-otw-swapped",
+   "expect": "EXP-NET",
+   "site": "EXP AMP_FAULT/OTW",
+   "about": "the TPA3220s' FAULT and OTW_CLIP bits swapped: a clip reads as a fault and shuts the amps",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_AMP_FAULT 8 ",
+     "replace": "#define EXP_AMP_FAULT 9 "
+    },
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_AMP_OTW 9 ",
+     "replace": "#define EXP_AMP_OTW 8 "
+    }
+   ]
+  },
+  {
+   "id": "pvdd-en-on-dac-en",
+   "expect": "EXP-NET",
+   "site": "EXP_PVDD_EN",
+   "about": "the PVDD switch's enable on P04, the board's DAC_EN",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_PVDD_EN 3",
+     "replace": "#define EXP_PVDD_EN 4"
+    }
+   ]
+  },
+  {
+   "id": "lcd-bl-on-tap-sel",
+   "expect": "EXP-NET",
+   "site": "EXP_LCD_BL",
+   "about": "the ultra-front backlight (FFC J3) driven on P17, which the board gives TAP_SEL_IO",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_LCD_BL 6 ",
+     "replace": "#define EXP_LCD_BL 15 "
+    }
+   ]
+  },
+  {
+   "id": "board-amp-rst-swapped",
+   "expect": "EXP-NET",
+   "site": "board AMP_A/B_RST",
+   "about": "the board wires zone A's TPA3220 reset to P01 and zone B's to P00",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "(pinfunction \"P00_4\")",
+     "replace": "(pinfunction \"P01\")"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "(pinfunction \"P01_5\")",
+     "replace": "(pinfunction \"P00\")"
+    }
+   ]
+  },
+  {
+   "id": "exp-addrs-before-tca9539",
+   "expect": "EXP-ADDR",
+   "site": "EXP_ADDRS",
+   "about": "the firmware tries only the TCA9555's 0x20-0x21, but the board's TCA9539 is strapped to 0x74",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_ADDRS {0x20, 0x74, 0x75, 0x76, 0x77}",
+     "replace": "#define EXP_ADDRS {0x20, 0x21}"
+    }
+   ]
+  },
+  {
+   "id": "pvdd-en-configured-input",
+   "expect": "EXP-DIR",
+   "site": "EXP_PVDD_EN",
+   "about": "EXP_CFG0 0x08 leaves P03 (PVDD_EN) an input: the amps' supply never switches on",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_CFG0 0x00",
+     "replace": "#define EXP_CFG0 0x08"
+    }
+   ]
+  },
+  {
+   "id": "amp-fault-configured-output",
+   "expect": "EXP-DIR",
+   "site": "EXP AMP_FAULT/OTW",
+   "about": "EXP_CFG1 0xFC drives P10/P11 against the TPA3220s' open-drain FAULT and OTW_CLIP",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_CFG1 0xFF",
+     "replace": "#define EXP_CFG1 0xFC"
+    }
+   ]
+  }
+ ]
+}

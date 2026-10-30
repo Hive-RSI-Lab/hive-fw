@@ -20,11 +20,17 @@ second, so it can run on every board change:
     internal EMAC's fixed RMII pins, UART0 and GPIO0/EN for flashing;
   - i2c: the device addresses the firmware talks to (address straps) and
     the bus speed (pull-up size).
+  - expander: an I2C I/O expander's bits (#define EXP_AMP_FAULT 8 is its
+    P10; "expander_prefix" in the config, default EXP_) and its direction
+    registers (#define EXP_CFG0 0x00, 1 = input).
 
 With a board (--board, or the config's board, a .net, .kicad_sch or
 .kicad_pcb), it also checks the board's ESP32 part against the module
 needs (flash, PSRAM, revision) and the pin map against the board's nets
-(fw pins' check). Each finding is a need (what the board must provide) or
+(fw pins' check), and the board's I/O expander (a TCA/PCA95xx, PCF857x,
+MCP230xx in its netlist) against the expander bits: each on the net its
+name matches, its address straps among the addresses the firmware tries,
+each output set as an output and each input as an input. Each finding is a need (what the board must provide) or
 a problem (the firmware or the board breaks one); exit 0 with no problems,
 1 with one, 2 when there was nothing to read.
 
@@ -262,6 +268,61 @@ def module_part(part: str) -> dict:
             "min_rev": 3 if re.search(r"(WROOM-32|WROVER)-?[DU]?E\b|WROOM-32UE|-E-", up) else None}
 
 
+# what an expander bit's name says it is: an output the firmware drives, or an
+# input it reads (a fault flag, a button); a name that says neither isn't judged
+EXP_OUT = {"RST", "RESET", "EN", "LED", "BL", "CS", "MUTE", "SDZ", "PWDN", "OE", "SEL"}
+EXP_IN = {"FAULT", "FAULTZ", "OTW", "CLIP", "ENC", "BTN", "BUTTON", "SW", "KEY", "INT", "IRQ", "ALERT",
+          "DET", "PG", "GOOD", "STAT"}
+
+
+def expander_problems(e, bits: list[dict], addrs: dict | None, cfg: dict[int, tuple[int, str]],
+                      prefix: str) -> list[tuple[str, str, str]]:
+    """The firmware's expander bits against the board's expander: each bit on
+    the net its name best matches, the strapped address among the ones the
+    firmware tries, and each output/input set that way in the direction
+    registers. [(code, problem, where)]."""
+    out = []
+    nets = {b: n for b, n in e.bits.items()}
+    strip = lambda name: name[len(prefix):] if name.startswith(prefix) else name  # noqa: E731
+    for x in bits:
+        b, name = x["bit"], x["name"]
+        have = nets.get(b, "absent")
+        if have == "absent":
+            out.append(("EXP-NET", f"{name}: {e.ref} {e.part} has no bit {b} (P{b // 8}{b % 8})", x["where"]))
+            continue
+        if have is None:
+            out.append(("EXP-NET", f"{name}: {e.ref} P{b // 8}{b % 8} isn't connected on the board", x["where"]))
+            continue
+        scores = {k: pins.match(strip(name), n) for k, n in nets.items()}
+        best = max(scores.values(), default=0)
+        if best and scores[b] < best:
+            alt = sorted(k for k, s in scores.items() if s == best)
+            out.append(("EXP-NET", f"{name} is {e.ref} P{b // 8}{b % 8} ({have}), but the board has "
+                        + ", ".join(f"{nets[k]} on P{k // 8}{k % 8}" for k in alt), x["where"]))
+    if e.addr is not None and addrs:
+        tried = {int(a, 16) for a in addrs["addr"]}
+        if e.addr not in tried:
+            out.append(("EXP-ADDR", f"{e.ref} {e.part} is strapped to {e.addr:#04x} ("
+                        + ", ".join(f"{a} {n}" for a, n in sorted(e.straps.items()))
+                        + f"), but the firmware tries {', '.join(addrs['addr'])}", addrs["where"]))
+    if cfg:
+        for x in bits:
+            b = x["bit"]
+            if b // 8 not in cfg:
+                continue
+            val, where = cfg[b // 8]
+            is_in = bool(val >> (b % 8) & 1)
+            words = set(strip(x["name"]).upper().split("_"))
+            out_w, in_w = bool(words & EXP_OUT), bool(words & EXP_IN)
+            if out_w and not in_w and is_in:
+                out.append(("EXP-DIR", f"{x['name']} (P{b // 8}{b % 8}) is an output, but {prefix}CFG{b // 8} "
+                            f"{val:#04x} makes it an input: the firmware's writes never reach the pin", where))
+            elif in_w and not out_w and not is_in:
+                out.append(("EXP-DIR", f"{x['name']} (P{b // 8}{b % 8}) is an input, but {prefix}CFG{b // 8} "
+                            f"{val:#04x} makes it an output: the expander drives against the signal", where))
+    return out
+
+
 def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = None) -> dict:
     needs: list[dict] = []
     problems: list[dict] = []
@@ -428,8 +489,24 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         for m in re.finditer(r'(?:sda=\d+,scl=\d+[^"]*?speed=(\d+))', s.replace('\\"', '"')):
             periph.setdefault("i2c_hz", int(m.group(1)))
             need("i2c", f"I2C pull-ups sized for {int(m.group(1)) // 1000} kHz on the bus's capacitance", w)
+    # the I/O expander's bits: #define EXP_AMP_FAULT 8 is its P10 (and its
+    # direction registers, #define EXP_CFG0 0x00, 1 = input)
+    prefix = cfg.get("expander_prefix", "EXP_")
+    exp_bits: list[dict] = []
+    exp_cfg: dict[int, tuple[int, str]] = {}
+    for w, s in lines:
+        m = re.match(rf"\s*#\s*define\s+{re.escape(prefix)}(\w+)\s+\(?\s*(0x[0-9a-fA-F]+|\d+)\s*\)?\s*(?:/[/*].*)?$", s)
+        if not m:
+            continue
+        words = set(m.group(1).upper().split("_"))
+        c = re.fullmatch(r"(?:CFG|CONFIG|DIR|IODIR)([01AB])", m.group(1).upper())
+        if c:
+            exp_cfg[{"0": 0, "1": 1, "A": 0, "B": 1}[c.group(1)]] = (int(m.group(2), 0), w)
+        elif not words & {"REG", "ADDR", "ADDRS", "CFG", "PORT", "NUM"} and m.group(2).isdigit() and int(m.group(2)) < 16:
+            exp_bits.append({"bit": int(m.group(2)), "name": prefix + m.group(1), "where": w})
+    exp_addrs = next((d for d in i2c if d["device"] == prefix.rstrip("_")), None)
     for d in i2c:
-        need("i2c", f"{d['device']} at I2C address {' or '.join(d['addr'])} (set by its address pins)"
+        need("i2c",f"{d['device']} at I2C address {' or '.join(d['addr'])} (set by its address pins)"
              + (f": {d['about']}" if d["about"] else ""), d["where"])
 
     rows, straps = [], {}
@@ -516,6 +593,21 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                 for r in x["pins"]:
                     if r["verdict"] != "pass":
                         problem("PIN-NET", "board", f"GPIO{r['gpio']} {r['name']}: {r['why']}", r["where"])
+        if exp_bits:
+            for b in files:
+                path = (project / b).resolve()
+                exps = pins.read_expanders(path) if path.is_file() else []
+                if len(exps) != 1:
+                    if exps:
+                        problem("EXP-NET", "board", f"{len(exps)} I/O expanders on the board; the firmware's "
+                                f"{prefix}* bits name one", str(path))
+                    continue
+                e = exps[0]
+                bd = next((x for x in boards if x.get("file") == str(path)), None)
+                if bd is not None:
+                    bd["expander"] = {"ref": e.ref, "part": e.part, "addr": e.addr, "bits": e.bits}
+                for code, text, where in expander_problems(e, exp_bits, exp_addrs, exp_cfg, prefix):
+                    problem(code, "board", text, where)
 
     return {"format": "fw-constraints/1", "target": target, "idf": fwpins.get("idf"),
             "sdkconfig": sdk_from if sdk_path else None, "module": mod, "flash": fl, "memory": mem,
@@ -546,6 +638,10 @@ def report(res: dict, name: str, out=None) -> None:
     for b in res["boards"]:
         pm = b.get("pins")
         p(f"board {b['file']}: {b['ref']} {b['part']}" + (f", pin map {'pass' if pm and not any(r['verdict'] != 'pass' for r in pm['pins']) else 'FAIL'}" if pm else ""))
+        if b.get("expander"):
+            e = b["expander"]
+            p(f"  expander {e['ref']} {e['part']}" + (f" at {e['addr']:#04x}" if e["addr"] is not None else "")
+              + ": " + ", ".join(f"P{k // 8}{k % 8} {n}" for k, n in sorted(e["bits"].items()) if n))
     for x in res["problems"]:
         p(f"PROBLEM {x['code']}: {x['problem']}" + (f"  ({x['from']})" if x["from"] else ""))
     p("constraints: ok" if res["ok"] else f"constraints: {len(res['problems'])} problem(s)")
