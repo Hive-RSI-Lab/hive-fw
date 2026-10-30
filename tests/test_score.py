@@ -115,6 +115,21 @@ class Targets(unittest.TestCase):
         (fw / "main.c").write_text("int dirty;")  # uncommitted edits don't count either
         self.assertEqual(score.score(self.root, io.StringIO()), 100.0)
 
+    def test_next_proof_takes_over_when_its_branch_merges(self):
+        fw = self.clone()
+        self.prove(score.inputs_hash(fw), build="pass", **{"host-test": "pass"}, qemu="pass")
+        self.git("checkout", "-qb", "pr")
+        (fw / "main.c").write_text("int pr;")
+        self.git("commit", "-qam", "pr")
+        (self.root / "proof" / "lite.next.json").write_text(json.dumps(
+            {"inputs": score.inputs_hash(fw), "stages": {"build": "pass"}}))
+        self.git("checkout", "-q", "main")
+        self.assertEqual(score.score(self.root, io.StringIO()), 100.0)  # main's own proof
+        self.git("merge", "-q", "pr")
+        out = io.StringIO()
+        self.assertEqual(score.score(self.root, out), 33.3)  # now the branch's
+        self.assertIn("lite: 1/3 build", out.getvalue())
+
     def test_main_files_skip_nothing_the_hash_would_see(self):
         fw = self.clone()
         (fw / "sub").mkdir()

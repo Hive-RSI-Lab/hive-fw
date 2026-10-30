@@ -112,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fw host-test: no {tdir} (set host_tests in fw.json)", file=sys.stderr)
         return 2
     out = project / "build-host"
-    env = dict(os.environ, FW_UNITY=str(UNITY), FW_PROJECT=str(project))
+    env = dict(os.environ, **pins.get("env", {}), FW_UNITY=str(UNITY), FW_PROJECT=str(project))
     if os.access(tdir / "run", os.X_OK):
         return subprocess.run([str(tdir / "run")], cwd=tdir, env=env).returncode
     if (tdir / "CMakeLists.txt").is_file():

@@ -273,6 +273,8 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
                 v = bootlog.judge(buf.decode(errors="replace"), expect)
                 if not v.ok:
                     v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s: {v.reason}", False)
+                elif prober and prober.result is not None and not prober.result.ok:
+                    v = prober.result
                 elif prober and prober.result is None:
                     v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s waiting on the HTTP requests", True)
                 break
@@ -313,7 +315,8 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
     if reached_at is not None and v.ok:
         v = bootlog.judge(buf.decode(errors="replace"), expect)
         if v.ok and prober and prober.result:
-            v = bootlog.Verdict(True, f"{v.reason}; {prober.result.reason}", True)
+            v = (bootlog.Verdict(True, f"{v.reason}; {prober.result.reason}", True) if prober.result.ok
+                 else prober.result)
     return v
 
 

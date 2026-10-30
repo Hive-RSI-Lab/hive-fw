@@ -2,11 +2,11 @@
   "firmware": "hifi-lite",
   "idf": "v4.4.8",
   "target": "esp32",
-  "inputs": "477dea7aa8f504cdd49bb0204f28e2fc4960038424f7a2ea5443fb17ecadc8d1",
+  "inputs": "1483103bd1f6cdda0b72a021c87afc93321706d2a2d202489346c5c5343b546a",
   "stages": {
     "build": "pass",
     "host-test": "pass",
     "qemu": "pass"
   },
-  "when": "2026-10-29T15:07:44+00:00"
+  "when": "2026-10-30T00:59:45+00:00"
 }

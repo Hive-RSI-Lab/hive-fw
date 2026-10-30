@@ -43,6 +43,10 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
     build needs beside the IDF's own. They're installed once into
     `~/.cache/fw/pyextra/` and put first on `PYTHONPATH`, so they work even
     when the IDF venv is the shared, read-only one.
+  - `"env": {"HIFI_BOARD": "core"}` sets variables for every step: the
+    prepare step, `idf.py` (so `fw build`, `fw idf`, `fw env`) and the host
+    tests. A tree that builds several boards picks one this way, as the
+    receiver's `fetch.sh` reads `HIFI_BOARD`.
   - `"qemu": {"sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y", ...]}` holds config
     lines for QEMU only, because QEMU emulates a revision-0 chip.
     `fw build --qemu` lays them over the project's sdkconfig in a second
@@ -188,10 +192,15 @@ work on.
     their project's main branch (a target's `ref`, default `main`) in the
     clone under `$HIVE_PROJECTS`, not from the clone's working tree. The
     first is `hifi-lite`, the receiver's Lite firmware in hifi-receiver-2's
-    `firmware/`.
+    `firmware/`. `hifi-plus` and `hifi-ultra` are the same tree built for
+    the core board (`"env": {"HIFI_BOARD": "core"}` or `"ultra"`), each
+    with its own IDF tree and HTTP requests; QEMU has no I2S, so neither
+    the DAC's I2S0 nor the sub's I2S1 starts there.
 
   `--from DIR` checks one target from another place, such as a branch that
-  hasn't merged; its proof counts once main has the same files. Each firmware is copied to a work dir and run through
+  hasn't merged. It writes `proof/<name>.next.json` beside the proof of
+  main's files, and the score counts whichever of the two was made on main's
+  current files, so a proof made ahead takes over when its branch merges. Each firmware is copied to a work dir and run through
   `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
   it has QEMU-only config). A target's pins in targets.json fill in what its
   own `fw.json` lacks, and its IDF tree is kept in
