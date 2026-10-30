@@ -1,5 +1,5 @@
 {
- "about": "Planted faults on a copy of the hifi receiver's core board (Plus and Ultra) firmware and netlist (hifi-receiver-2 main ac484b1, Plus's config: HIFI_PLUS). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site.",
+ "about": "Planted faults on a copy of the hifi receiver's core board (Plus and Ultra) firmware and netlist (hifi-receiver-2 main b485714, Plus's config: HIFI_PLUS). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site.",
  "faults": [
   {
    "id": "dac-addr-high",
@@ -438,6 +438,34 @@
      "file": "firmware/components/hifi/esp/hifi_board_core.h",
      "find": "#define EXP_CFG1 0xFF",
      "replace": "#define EXP_CFG1 0xFC"
+    }
+   ]
+  },
+  {
+   "id": "lan8720-phy-addr-hardcoded",
+   "expect": "ETH-PHYADDR",
+   "site": "LAN8720 phy_addr",
+   "about": "no patch for squeezelite's hard-coded LAN8720 phy_addr = 1, while U9's PHYAD0 is open (internal pull-down, address 0)",
+   "from": "hifi-receiver-2 review-3 R3-DIGITAL-2, fixed in b485714 (patches/0002: phy_addr -1)",
+   "edits": [
+    {
+     "file": "firmware/patches/0002-lan8720-phy-address-auto.patch",
+     "find": "-    phy_config.phy_addr = 1;\n+    phy_config.phy_addr = -1; /* hifi: auto-detect (core straps PHYAD0 to 0) */",
+     "replace": "     phy_config.phy_addr = 1;"
+    }
+   ]
+  },
+  {
+   "id": "tap-sel-named-lcd-cs",
+   "expect": "EXP-NET",
+   "site": "EXP_TAP_SEL",
+   "about": "expander P17 named LCD_CS in the firmware, where the board has TAP_SEL_IO (the ADC's tap/line-in select through Q7)",
+   "from": "hifi-receiver-2 review-3 R3-DIGITAL-4, fixed in b485714 (EXP_TAP_SEL 15)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_core.h",
+     "find": "#define EXP_TAP_SEL 15",
+     "replace": "#define EXP_LCD_CS 15"
     }
    ]
   },

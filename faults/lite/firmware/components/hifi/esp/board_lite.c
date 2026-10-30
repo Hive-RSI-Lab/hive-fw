@@ -30,6 +30,7 @@ void hifi_bsp_init(hifi_power_cfg_t *pc, hifi_gov_cfg_t *gc) {
 
 	adc1_config_width(ADC_WIDTH_BIT_12);
 	adc1_config_channel_atten(ADC_VBUS, ADC_ATTEN_DB_12);
+	adc1_config_channel_atten(ADC_PVDD, ADC_ATTEN_DB_12);
 	esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
 
 	hifi_power_cfg_lite(pc);
@@ -38,17 +39,20 @@ void hifi_bsp_init(hifi_power_cfg_t *pc, hifi_gov_cfg_t *gc) {
 
 void hifi_bsp_start(void) {}
 
-static float read_vbus(void) {
+static float read_div(adc1_channel_t ch, float divider) {
 	uint32_t sum = 0;
-	for (int i = 0; i < 8; i++) sum += adc1_get_raw(ADC_VBUS);
-	return esp_adc_cal_raw_to_voltage(sum / 8, &adc_chars) * VBUS_DIVIDER / 1000.0f;
+	for (int i = 0; i < 8; i++) sum += adc1_get_raw(ch);
+	return esp_adc_cal_raw_to_voltage(sum / 8, &adc_chars) * divider / 1000.0f;
 }
 
 void hifi_bsp_power_in(uint32_t now, hifi_bsp_power_t *p) {
-	p->vbus_v = read_vbus();
+	p->vbus_v = read_div(ADC_VBUS, VBUS_DIVIDER);
+	/* PVDD after the switch (PVDD_SENSE): the sequencer confirms it closed */
+	p->pvdd_v = read_div(ADC_PVDD, PVDD_DIVIDER);
 	p->pg = gpio_get_level(PIN_PD_PG) == 0;
 	p->fault = gpio_get_level(PIN_AMP_FAULTZ) == 0;
 	p->vbus_i_a = NAN;
+	p->otw = false; /* the TPA3118 has no warning pin, only FAULTZ */
 	/* the PD sink's registers every 500 ms */
 	p->pd_read = now - last_pd >= 500;
 	if (p->pd_read) {
@@ -68,9 +72,17 @@ void hifi_bsp_power_out(const hifi_power_out_t *o) {
 
 /* ------------------------------------------------------------------ codec */
 
+/* LOUT2/ROUT2 volume code, 1.5 dB a step, 30 = 0 dB. At most 24 (-9 dB):
+ * the sub mute's 2N7002s (Q13-Q15) are off with their gates near 0 V, and a
+ * part at Vth(min) 1.0 V leaks on the line's negative peaks once warm (0.1-
+ * 0.4 % THD at -6 dB, 50-70 C; 0.014 % at -9 dB: docs/review-4/als.md
+ * R4-ALS-1, sims/als/mute_corners.py). Squeezelite's codec init
+ * (patches/0001, DAC_CONTROLSET) starts them at 24 too (R4-ALS-2) */
+#define SUB_CODE_MAX 24
+
 static int sub_code(float db) {
 	int code = (int) lrintf(30 + db / 1.5f);
-	return code < 0 ? 0 : code > 33 ? 33 : code;
+	return code < 0 ? 0 : code > SUB_CODE_MAX ? SUB_CODE_MAX : code;
 }
 
 float hifi_bsp_sub_db(float db) { return (sub_code(db) - 30) * 1.5f; }
@@ -128,7 +140,7 @@ void hifi_bsp_info(hifi_info_t *i) {
 }
 
 void hifi_bsp_snapshot(hifi_snapshot_t *s) {
-	s->pvdd_v = s->vbus_i_a = s->amp_temp_c = NAN; /* no sensors on lite-main */
+	s->vbus_i_a = s->amp_temp_c = NAN; /* no current or temperature sense on lite-main; PVDD is read */
 	s->zones = 1;
 }
 

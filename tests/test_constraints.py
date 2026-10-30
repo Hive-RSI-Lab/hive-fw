@@ -281,6 +281,95 @@ class Expander(unittest.TestCase):
         net = self.NET.replace('(value "TCA9539")', '(value "LM358")')
         self.assertEqual(self.problems(net=net)[0], [])
 
+    def test_an_output_the_code_never_writes_may_stay_an_input(self):
+        """hifi core's EXP_TAP_SEL: named, left an input on purpose (a pull holds it)."""
+        p = Path(tempfile.mkdtemp())
+        (p / "b.h").write_text(self.H.replace("EXP_CFG0 0x00", "EXP_CFG0 0x02"))
+        (p / "b.net").write_text(self.NET)
+        cfg = {"sources": ["*.h", "*.c"], "board": "b.net"}
+        (p / "b.c").write_text("set(1 << EXP_AMP_RST); get(EXP_AMP_FAULT);\n")
+        res = constraints.build_report(p, {"target": "esp32"}, cfg)
+        self.assertEqual([x["code"] for x in res["problems"]], [])
+        (p / "b.c").write_text("set(1 << EXP_AMP_RST | 1 << EXP_PVDD_EN);\n")
+        res = constraints.build_report(p, {"target": "esp32"}, cfg)
+        self.assertEqual([x["code"] for x in res["problems"]], ["EXP-DIR"])
+
+
+class PhyAddress(unittest.TestCase):
+    """The LAN8720's SMI address in the firmware against its PHYAD0 strap."""
+    NET = """(export (version "E")
+  (components
+    (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
+    (comp (ref "U9") (value "LAN8720A"))
+    (comp (ref "R5") (value "10k")))
+  (nets
+    (net (code "1") (name "{net}") (node (ref "U9") (pin "10") (pinfunction "RXER/PHYAD0_10")){pull})
+    (net (code "2") (name "+3V3") (node (ref "R5") (pin "1")))
+    (net (code "3") (name "/MDC") (node (ref "U1") (pin "37") (pinfunction "IO23")) (node (ref "U9") (pin "13") (pinfunction "MDC")))))
+"""
+    H = '#define HIFI_UPSTREAM "squeezelite-esp32 master-v4.3"\n/* default "model=LAN8720,mdc=23,mdio=18" */\n'
+
+    def codes(self, patch=None, pulled=False):
+        p = Path(tempfile.mkdtemp())
+        (p / "b.h").write_text(self.H)
+        if patch is not None:
+            (p / "0002.patch").write_text(f"--- a/x.c\n+++ b/x.c\n@@ -1 +1 @@\n-    phy_config.phy_addr = 1;\n+{patch}\n")
+        net = self.NET.format(net="/PHYAD0" if pulled else "unconnected-(U9-RXER{slash}PHYAD0-Pad10)",
+                              pull=' (node (ref "R5") (pin "2"))' if pulled else "")
+        (p / "b.net").write_text(net)
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h", "*.patch"], "board": "b.net"})
+        return [x["code"] for x in res["problems"] if x["code"].startswith("ETH")]
+
+    def test_squeezelite_hard_codes_1_but_the_strap_says_0(self):
+        """hifi core, review-3 R3-DIGITAL-2."""
+        self.assertEqual(self.codes(), ["ETH-PHYADDR"])
+        self.assertEqual(self.codes("    phy_config.phy_addr = 1;"), ["ETH-PHYADDR"])
+
+    def test_auto_detect_or_the_strapped_address(self):
+        self.assertEqual(self.codes("    phy_config.phy_addr = -1;"), [])
+        self.assertEqual(self.codes("    phy_config.phy_addr = 0;"), [])
+        self.assertEqual(self.codes(pulled=True), [])
+
+
+class Divider(unittest.TestCase):
+    """A reading's *_DIVIDER against the resistors that divide it."""
+    NET = """(export (version "E")
+  (components
+    (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
+    (comp (ref "U2") (value "ES8388"))
+    (comp (ref "R13") (value "100k")) (comp (ref "R14") (value "10k"))
+    (comp (ref "R30") (value "15k")) (comp (ref "R31") (value "10k")))
+  (nets
+    (net (code "1") (name "VBUS") (node (ref "R13") (pin "1")))
+    (net (code "2") (name "/VBUS_SENSE") (node (ref "U1") (pin "6") (pinfunction "IO34")) (node (ref "R13") (pin "2")) (node (ref "R14") (pin "1")))
+    (net (code "3") (name "/LINEIN_L") (node (ref "R30") (pin "1")))
+    (net (code "4") (name "/LINEIN_L_D") (node (ref "R30") (pin "2")) (node (ref "R31") (pin "1")) (node (ref "U2") (pin "20") (pinfunction "LIN1")))
+    (net (code "5") (name "GND") (node (ref "R14") (pin "2")) (node (ref "R31") (pin "2")))))
+"""
+
+    def codes(self, vbus="11.0f", line="2.5f"):
+        p = Path(tempfile.mkdtemp())
+        (p / "b.h").write_text(f"#define ADC_VBUS ADC1_CHANNEL_6 /* GPIO34 */\n#define VBUS_DIVIDER {vbus}\n"
+                               f"#define LINE_DIVIDER {line} /* 15k over 10k (R30/R31) */\n")
+        (p / "b.net").write_text(self.NET)
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net"})
+        return [x["problem"] for x in res["problems"] if x["code"] == "ADC-DIVIDER"]
+
+    def test_the_board_ratio(self):
+        self.assertEqual(self.codes(), [])
+        self.assertEqual(self.codes(line="3.25f"), [])  # LIN1 loads the bottom leg: reads higher
+
+    def test_a_stale_constant(self):
+        """hifi Lite, review-3 R3-DIGITAL-5: LINE_DIVIDER 2.0 on R30/R31 15k/10k."""
+        self.assertEqual(self.codes(line="2.0f"), ["LINE_DIVIDER 2, but R30 15k over R31 10k on LINEIN_L_D divide by "
+                                                   "2.5 (more, loaded, never less): every line reading is off by 20 %"])
+        self.assertEqual(len(self.codes(vbus="8.0f")), 1)
+        self.assertEqual(len(self.codes(vbus="12.0f")), 1)  # into the ESP32 alone: the ratio, no more
+
+    def test_ohms(self):
+        self.assertEqual([constraints.ohms(v) for v in ("15k", "4k7", "2.2k", "100R", "1M", "10k 1%", "x")],
+                         [15e3, 4.7e3, 2.2e3, 100, 1e6, 10e3, None])
+
 
 class AudioPath(unittest.TestCase):
     """MCLK on a pin that carries it, I2S data out into a data in, one
