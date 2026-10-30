@@ -56,12 +56,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fwlib  # noqa: E402
-import score  # noqa: E402
+import check_all  # noqa: E402
 
-try:  # fw pins (scripts/pins.py) reads the firmware's GPIOs and the board's nets
-    import pins
-except ImportError:  # an fw without it: the report says pins weren't read
-    pins = None
+import pins  # noqa: E402  (fw pins reads the firmware's GPIOs and the board's nets)
 
 FLASH = {6, 7, 8, 9, 10, 11}
 PSRAM = {16, 17}
@@ -75,8 +72,12 @@ STRAPS = {
     12: "GPIO12 (MTDI) must be low at reset: high selects 1.8 V flash and a 3.3 V module won't boot",
     15: "GPIO15 (MTDO) high at reset prints the ROM boot log; low silences it",
 }
+# a strap the board's resistor holds the wrong way at reset: GPIO -> the bad pull
+STRAP_BAD = {0: "down", 2: "up", 12: "up"}
 # the classic ESP32's brown-out detector, level -> volts (the IDF's Kconfig)
 BROWNOUT = {0: 2.43, 1: 2.48, 2: 2.58, 3: 2.62, 4: 2.67, 5: 2.70, 6: 2.77, 7: 2.80}
+# the settings that turn PSRAM on (the rest use it)
+PSRAM_SWITCHES = {"CONFIG_SPIRAM", "CONFIG_ESP32_SPIRAM_SUPPORT", "CONFIG_SPIRAM_SUPPORT"}
 # the internal EMAC's RMII pins are fixed in silicon (the IO_MUX)
 RMII = {19: "TXD0", 21: "TX_EN", 22: "TXD1", 25: "RXD0", 26: "RXD1", 27: "CRS_DV"}
 RMII_PHYS = r"LAN87\w*|IP101\w*|RTL8201\w*|DP83848\w*|KSZ80\w*"
@@ -137,6 +138,30 @@ def read_partitions(path: Path | None, table_offset: int = 0x8000) -> list[dict]
     return rows
 
 
+def table_problems(table: list[dict], table_offset: int = 0x8000) -> list[tuple[str, str]]:
+    """What the IDF's gen_esp32part or the bootloader refuses in a table."""
+    out = []
+    for i, p in enumerate(table):
+        align = 0x10000 if p["type"] == "app" else 0x1000
+        if p["offset"] % align:
+            out.append(("PART-ALIGN", f"{p['name']} at {p['offset']:#x} is not {align:#x}-aligned"))
+        if p["offset"] < table_offset + 0x1000:
+            out.append(("PART-OVERLAP", f"{p['name']} at {p['offset']:#x} overlaps the partition table at {table_offset:#x}"))
+        for q in table[i + 1:]:
+            if p["offset"] < q["offset"] + q["size"] and q["offset"] < p["offset"] + p["size"]:
+                out.append(("PART-OVERLAP", f"{p['name']} ({p['offset']:#x}+{p['size']:#x}) overlaps "
+                            f"{q['name']} ({q['offset']:#x}+{q['size']:#x})"))
+    names = [p["name"] for p in table]
+    for n in sorted({n for n in names if names.count(n) > 1}):
+        out.append(("PART-BAD", f"two partitions named {n}"))
+    if any(p["type"] == "app" and p["subtype"].startswith("ota_") for p in table) and \
+            not any(p["type"] == "data" and p["subtype"] == "ota" for p in table):
+        out.append(("PART-OTA", "OTA app slots but no otadata partition: the bootloader can't switch slots"))
+    if not any(p["type"] == "app" for p in table):
+        out.append(("PART-BAD", "no app partition"))
+    return out
+
+
 def elf_sections(path: Path) -> dict[str, int]:
     """Section name -> size, for an ELF32 (the ESP32's), standard library only."""
     data = path.read_bytes()
@@ -195,28 +220,12 @@ def memory(build: Path | None) -> dict:
 def source_lines(project: Path, globs: list[str], when: str | None):
     """(where, line) over the sources, a patch's added lines only, a Kconfig
     `default ... if COND` line only when COND names `when`."""
-    if pins:
-        lines = pins.source_lines(project, globs)
-    else:
-        lines = _source_lines(project, globs)
+    lines = pins.source_lines(project, globs)
     for where, line in lines:
         cond = re.search(r"\sif\s+([^\"]+?)\s*$", line)
         if when and cond and not re.search(rf"\b{re.escape(when)}\b", cond.group(1)):
             continue
         yield where, line
-
-
-def _source_lines(project: Path, globs: list[str]):
-    for g in globs:
-        for f in sorted(glob.glob(str(project / g), recursive=True)):
-            p = Path(f)
-            if not p.is_file():
-                continue
-            patch = p.suffix in (".patch", ".diff")
-            for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                if patch and (not line.startswith("+") or line.startswith("+++")):
-                    continue
-                yield f"{p.relative_to(project) if p.is_relative_to(project) else p}:{i}", line[1:] if patch else line
 
 
 # ---- the report -----------------------------------------------------------
@@ -226,7 +235,7 @@ def config(project: Path, target: str | None) -> tuple[dict, dict]:
     constraints config, with pinmap's keys filling in."""
     over = {}
     if target:
-        t = score.targets().get(target)
+        t = check_all.targets().get(target)
         if t is None:
             raise SystemExit(f"fw constraints: no target {target} in targets.json")
         over = t.get("pins", {})
@@ -261,8 +270,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
     def need(about, text, where=""):
         needs.append({"about": about, "need": text, "from": where})
 
-    def problem(about, text, where=""):
-        problems.append({"about": about, "problem": text, "from": where})
+    def problem(code, about, text, where=""):
+        problems.append({"code": code, "about": about, "problem": text, "from": where})
 
     target = fwpins.get("target", fwlib.DEFAULT_TARGET)
     sdk_path = None
@@ -285,7 +294,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
     mod["flash"] = flash
     if flash:
         need("module", f"{flash // (1 << 20)} MB of flash or more", f"{sdk_from} CONFIG_ESPTOOLPY_FLASHSIZE")
-    psram = on("CONFIG_SPIRAM") or on("CONFIG_ESP32_SPIRAM_SUPPORT")
+    # IDF 4's switch is ESP32_SPIRAM_SUPPORT (CONFIG_SPIRAM follows it), IDF 5's is SPIRAM
+    psram = on("CONFIG_ESP32_SPIRAM_SUPPORT") if "CONFIG_ESP32_SPIRAM_SUPPORT" in sdk else on("CONFIG_SPIRAM")
     psram_optional = on("CONFIG_SPIRAM_IGNORE_NOTFOUND")
     mod["psram"] = "optional" if psram and psram_optional else psram
     if psram:
@@ -329,7 +339,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         if table_path is None:
             near = sorted((sdk_path.parent if sdk_path else project).glob("partitions*.csv"))
             table_path = near[0] if near else None
-    table = read_partitions(table_path, size_of(sdk.get("CONFIG_PARTITION_TABLE_OFFSET", "0x8000")) or 0x8000)
+    table_offset = size_of(sdk.get("CONFIG_PARTITION_TABLE_OFFSET", "0x8000")) or 0x8000
+    table = read_partitions(table_path, table_offset)
     tbl_from = str(table_path.relative_to(project)) if table_path and table_path.is_relative_to(project) else str(table_path)
     fl: dict = {"size": flash, "table": tbl_from if table else None, "partitions": table}
     if table:
@@ -337,7 +348,9 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         fl["end"] = endp
         need("module", f"flash for the partition table: it ends at {endp:#x} ({endp / (1 << 20):.2f} MB)", tbl_from)
         if flash and endp > flash:
-            problem("flash", f"the partition table ends at {endp:#x}, past the {flash // (1 << 20)} MB flash", tbl_from)
+            problem("PART-FLASH", "flash", f"the partition table ends at {endp:#x}, past the {flash // (1 << 20)} MB flash", tbl_from)
+        for code, text in table_problems(table, table_offset):
+            problem(code, "flash", text, tbl_from)
 
     # memory
     mem = memory(build)
@@ -349,16 +362,35 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
             free = p["size"] - mem["image"]
             p["free"] = free
             if free < 0:
-                problem("flash", f"the app image ({mem['image']} B) is {-free} B over partition {p['name']} ({p['size']} B)",
+                problem("PART-IMAGE", "flash", f"the app image ({mem['image']} B) is {-free} B over partition {p['name']} ({p['size']} B)",
                         mem["elf"])
+
+    # images a build put in named partitions (the recovery app is not the main one)
+    if cfg.get("images") and table:
+        imgs = json.loads((project / cfg["images"]).read_text(encoding="utf-8"))
+        slots = {p["name"]: p for p in table}
+        for name, size in sorted(imgs.items()):
+            if name not in slots:
+                problem("PART-IMAGE", "flash", f"an image for {name}, but no partition {name}", cfg["images"])
+            elif int(size) > slots[name]["size"]:
+                problem("PART-IMAGE", "flash", f"the {name} image ({int(size)} B) is {int(size) - slots[name]['size']} B "
+                        f"over its partition ({slots[name]['size']} B)", cfg["images"])
+            else:
+                slots[name]["free"] = slots[name]["size"] - int(size)
+
+    # sdkconfig settings that put things in a PSRAM the firmware turned off
+    if not psram:
+        uses = sorted(k for k, v in sdk.items() if v == "y" and k not in PSRAM_SWITCHES
+                      and re.search(r"SPIRAM|EXTERNAL_MEMORY|EXT_RAM", k))
+        if uses:
+            problem("SPIRAM-OFF", "module", "PSRAM support is off, but " + ", ".join(uses[:4])
+                    + (f" and {len(uses) - 4} more" if len(uses) > 4 else "") + " put data in it", sdk_from)
 
     # pins and peripherals
     sources = cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"]
     when = cfg.get("when")
-    fw_pins = []
-    if pins:
-        ignore = set(cfg.get("ignore") or [])
-        fw_pins = [p for p in pins.firmware_pins(project, sources, when) if p["name"] not in ignore]
+    ignore = set(cfg.get("ignore") or [])
+    fw_pins = [p for p in pins.firmware_pins(project, sources, when) if p["name"] not in ignore]
     lines = list(source_lines(project, sources, when))
     eth = next(((w, m.group(1)) for w, s in lines for m in [re.search(rf"\bmodel=({RMII_PHYS})\b", s)] if m), None)
     if eth is None:  # the IDF enables its EMAC driver by default, so only the sources tell
@@ -379,13 +411,13 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
              eth[0])
         for p in fw_pins:
             if p["gpio"] in RMII and not re.search(r"RMII|ETH|TX|RX|CRS", p["name"], re.I):
-                problem("pins", f"GPIO{p['gpio']} is the EMAC's RMII {RMII[p['gpio']]}, but the firmware also uses it "
+                problem("PIN-RMII", "pins", f"GPIO{p['gpio']} is the EMAC's RMII {RMII[p['gpio']]}, but the firmware also uses it "
                         f"for {p['name']}", p["where"])
     for w, s in lines:
         for m in re.finditer(r"\bADC2_CHANNEL_(\d+)\b", s):
             g = ADC2.get(int(m.group(1)))
             if wifi and g is not None:
-                problem("pins", f"ADC2 channel {m.group(1)} (GPIO{g}) reads nothing while Wi-Fi runs: "
+                problem("ADC2-WIFI", "pins", f"ADC2 channel {m.group(1)} (GPIO{g}) reads nothing while Wi-Fi runs: "
                         "an analog input wants an ADC1 pin (GPIO32-39)", w)
     i2c = []
     for w, s in lines:
@@ -403,16 +435,16 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
 
     rows, straps = [], {}
     for p in sorted(fw_pins, key=lambda p: (p["gpio"], p["name"])):
-        g, words = p["gpio"], (pins.tokens(p["name"]) if pins else set())
+        g, words = p["gpio"], pins.tokens(p["name"])
         rules = []
         if target == "esp32" and g in FLASH:
-            problem("pins", f"GPIO{g} ({p['name']}) is the module's flash", p["where"])
+            problem("PIN-FLASH", "pins", f"GPIO{g} ({p['name']}) is the module's flash", p["where"])
         if target == "esp32" and psram and g in PSRAM:
-            problem("pins", f"GPIO{g} ({p['name']}) is the PSRAM's on a WROVER", p["where"])
+            problem("PIN-FLASH", "pins", f"GPIO{g} ({p['name']}) is the PSRAM's on a WROVER", p["where"])
         if target == "esp32" and g in INPUT_ONLY:
             rules.append("input only, no pull-ups inside: the board pulls it")
             if words & OUTPUT_WORDS:
-                problem("pins", f"GPIO{g} is input only, but {p['name']} looks like an output", p["where"])
+                problem("PIN-INPUT", "pins", f"GPIO{g} is input only, but {p['name']} looks like an output", p["where"])
         if target == "esp32" and g in STRAPS:
             rules.append("strapping pin")
             straps.setdefault(g, []).append(p)
@@ -420,6 +452,16 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
     for g, ps in sorted(straps.items()):
         names = sorted({p["name"] for p in ps})
         need("pins", f"{STRAPS[g]} (the firmware uses it for {', '.join(names)})", ps[0]["where"])
+    by_gpio: dict[int, list[dict]] = {}
+    for p in fw_pins:
+        by_gpio.setdefault(p["gpio"], []).append(p)
+    for g, ps in sorted(by_gpio.items()):
+        clash = next(((a, b) for i, a in enumerate(ps) for b in ps[i + 1:]
+                      if pins.tokens(a["name"]) and pins.tokens(b["name"])
+                      and not pins.tokens(a["name"]) & pins.tokens(b["name"])), None)
+        if clash:
+            a, b = clash
+            problem("PIN-SHARED", "pins", f"GPIO{g} is both {a['name']} ({a['where']}) and {b['name']}", b["where"])
     need("pins", "UART0 (GPIO1 TX, GPIO3 RX), EN and GPIO0 reachable for flashing and the boot log "
          "(a USB-UART with auto-reset, or a header)", "fw flash / fw monitor")
     # the same need can come from several places (one strap, two names)
@@ -434,48 +476,51 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
     boards = []
     if cfg.get("board"):
         files = [cfg["board"]] if isinstance(cfg["board"], str) else cfg["board"]
-        if pins is None:
-            boards.append({"error": "fw pins isn't in this fw: the board wasn't read"})
-        for b in (files if pins else []):
+        for b in files:
             path = (project / b).resolve()
             if not path.is_file():
-                problem("board", f"no board file {path}")
+                problem("BOARD", "board", f"no board file {path}")
                 continue
             try:
                 found, note = pins.read_board(path, cfg.get("ref"))
             except (OSError, FileNotFoundError) as e:
-                problem("board", str(e), str(path))
+                problem("BOARD", "board", str(e), str(path))
                 continue
             if len(found) != 1:
-                problem("board", f"{'no' if not found else 'more than one'} ESP32 on the board", str(path))
+                problem("BOARD", "board", f"{'no' if not found else 'more than one'} ESP32 on the board", str(path))
                 continue
             esp = found[0]
             part = module_part(esp.part)
             bd = {"file": str(path), "ref": esp.ref, "part": esp.part, "module": part}
             if flash and part["flash_mb"] is not None and part["flash_mb"] << 20 < flash:
-                problem("board", f"{esp.ref} {esp.part} has {part['flash_mb']} MB of flash; the firmware needs "
+                problem("BOARD-FLASH", "board", f"{esp.ref} {esp.part} has {part['flash_mb']} MB of flash; the firmware needs "
                         f"{flash // (1 << 20)} MB", str(path))
             if psram and not psram_optional and not part["psram"]:
-                problem("board", f"{esp.ref} {esp.part} has no PSRAM; the firmware needs it", str(path))
+                problem("BOARD-PSRAM", "board", f"{esp.ref} {esp.part} has no PSRAM; the firmware needs it", str(path))
             if mod.get("min_rev", 0) >= 3 and part["min_rev"] is None:
-                problem("board", f"{esp.ref} {esp.part} may be older than chip v3; the firmware needs v{mod['min_rev']}",
+                problem("BOARD-REV", "board", f"{esp.ref} {esp.part} may be older than chip v3; the firmware needs v{mod['min_rev']}",
                         str(path))
+            if target == "esp32":
+                for g, bad in STRAP_BAD.items():
+                    net = esp.gpios.get(g)
+                    rs = [r for r, to in esp.pulls.get(net, []) if to == bad] if net else []
+                    if rs:
+                        problem(f"STRAP-{g}", "board", f"{', '.join(rs)} pulls GPIO{g} ({net}) {bad}: {STRAPS[g]}", str(path))
             boards.append(bd)
-        if pins and files:
+        if files:
             res = pins.check(project, {**cfg, "board": files})
             for bd in boards:
                 bd["pins"] = next((x for x in res["boards"] if x["file"] == bd.get("file")), None)
             if res["error"]:
-                problem("board", f"pin map not checked: {res['error']}")
+                problem("BOARD", "board", f"pin map not checked: {res['error']}")
             for x in res["boards"]:
                 for r in x["pins"]:
                     if r["verdict"] != "pass":
-                        problem("board", f"GPIO{r['gpio']} {r['name']}: {r['why']}", r["where"])
+                        problem("PIN-NET", "board", f"GPIO{r['gpio']} {r['name']}: {r['why']}", r["where"])
 
     return {"format": "fw-constraints/1", "target": target, "idf": fwpins.get("idf"),
             "sdkconfig": sdk_from if sdk_path else None, "module": mod, "flash": fl, "memory": mem,
-            "pins": rows if pins else None,
-            "pins_note": "" if pins else "fw pins isn't in this fw: the firmware's GPIOs weren't read",
+            "pins": rows,
             "peripherals": periph, "i2c": i2c, "boards": boards,
             "needs": needs, "problems": problems, "ok": not problems}
 
@@ -491,25 +536,19 @@ def report(res: dict, name: str, out=None) -> None:
     if m.get("measured"):
         p("memory (bytes): " + ", ".join(f"{k} {v}" for k, v in m["used"].items() if v)
           + (f"; app image {m['image']}" if m.get("image") else ""))
-        for part in res["flash"]["partitions"]:
-            if "free" in part:
-                p(f"  {part['name']}: {part['size']} B, {part['free']} B free")
     else:
         p(f"memory: not measured ({m['why']})")
-    if res["pins"] is None:
-        p(f"pins: {res['pins_note']}")
-    else:
-        p(f"pins the firmware uses: {len(res['pins'])}")
-        for r in res["pins"]:
-            p(f"  GPIO{r['gpio']:<3}{r['name']:<18}{'; '.join(r['rules']):<40} ({r['where']})".rstrip())
+    for part in res["flash"]["partitions"]:
+        if "free" in part:
+            p(f"  {part['name']}: {part['size']} B, {part['free']} B free")
+    p(f"pins the firmware uses: {len(res['pins'])}")
+    for r in res["pins"]:
+        p(f"  GPIO{r['gpio']:<3}{r['name']:<18}{'; '.join(r['rules']):<40} ({r['where']})".rstrip())
     for b in res["boards"]:
-        if b.get("error"):
-            p(f"board: {b['error']}")
-        else:
-            pm = b.get("pins")
-            p(f"board {b['file']}: {b['ref']} {b['part']}" + (f", pin map {'pass' if pm and not any(r['verdict'] != 'pass' for r in pm['pins']) else 'FAIL'}" if pm else ""))
+        pm = b.get("pins")
+        p(f"board {b['file']}: {b['ref']} {b['part']}" + (f", pin map {'pass' if pm and not any(r['verdict'] != 'pass' for r in pm['pins']) else 'FAIL'}" if pm else ""))
     for x in res["problems"]:
-        p(f"PROBLEM {x['about']}: {x['problem']}" + (f"  ({x['from']})" if x["from"] else ""))
+        p(f"PROBLEM {x['code']}: {x['problem']}" + (f"  ({x['from']})" if x["from"] else ""))
     p("constraints: ok" if res["ok"] else f"constraints: {len(res['problems'])} problem(s)")
 
 
@@ -524,8 +563,8 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     project = a.project
     if project is None:
-        t = score.targets().get(a.target) if a.target else None
-        project = score.target_dir(t) if t else Path(".")
+        t = check_all.targets().get(a.target) if a.target else None
+        project = check_all.target_dir(t) if t else Path(".")
     project = project.resolve()
     fwpins, cfg = config(project, a.target)
     if a.board:

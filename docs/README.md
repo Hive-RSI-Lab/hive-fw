@@ -84,6 +84,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
+| `fw pins [P] [--board F]` | Just the pin map against the board's KiCad netlist (`.net`, `.kicad_sch`, `.kicad_pcb`): the part of `fw constraints` hwde's side runs alone. |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
 (`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
@@ -163,8 +164,9 @@ to see where. That's how the ADC wait was found.
 
 ## What the firmware needs from the board
 
-`fw constraints` puts everything the firmware takes for granted about the
-hardware into one report, so the board is designed against it instead of
+`fw constraints` is fw's one checker. It puts everything the firmware takes
+for granted about the hardware into one report, and every rule the firmware
+or the board breaks in it as a coded problem, so the board is designed against it instead of
 discovering it at bring-up. Each line says where in the firmware it comes
 from. It reads files only, needs no IDF and takes about a second, so the
 board side can run it on every change:
@@ -180,16 +182,22 @@ What it reads, and the needs it turns that into:
   Bluetooth, which mean an antenna keep-out and a 3.3 V supply that gives
   500 mA or more for transmit peaks; the brown-out threshold the rail has
   to stay above.
-- **The partition table**: where it ends, against the flash size. With a
-  build (`--build`, or the project's own `build/`), it also checks the app
+- **The partition table**: where it ends, against the flash size;
+  partitions that overlap each other or the table (PART-OVERLAP), aren't
+  aligned (PART-ALIGN, apps on 64 KB), share a name or leave no app
+  (PART-BAD), or OTA slots without otadata (PART-OTA). `images` (a JSON of
+  partition -> bytes a build put there) checks each image against its own
+  slot (PART-IMAGE). With a build (`--build`, or the project's own `build/`), it also checks the app
   image against its partitions (the OTA slots, or else the factory one) and
   gives DRAM, IRAM, flash and PSRAM use from the ELF.
 - **The sources**: the GPIOs the firmware drives (read by `fw pins`'s
   reader), each against the ESP32's rules: the flash pins (6-11) and a
   WROVER's PSRAM pins (16/17) are taken; 34-39 are input only, with no
   pull-ups inside; strapping levels at reset (GPIO0 high, GPIO2 low or
-  floating, GPIO12 low for 3.3 V flash); ADC2 reads nothing while Wi-Fi is
-  on. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
+  floating, GPIO12 low for 3.3 V flash, so a GPIO12 in use is STRAP-12);
+  ADC2 reads nothing while Wi-Fi is on (ADC2-WIFI); one GPIO given two
+  unrelated jobs is PIN-SHARED. PSRAM off while other settings put data in
+  it (Bluetooth's buffers, malloc) is SPIRAM-OFF. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
   internal EMAC's fixed pins (19, 21, 22, 25, 26, 27, and the clock on
   0/16/17) on the list. The report also lists the I2C addresses the firmware
   talks to (`#define X_ADDR 0x48`: the board's address straps have to match)
@@ -201,7 +209,10 @@ What it reads, and the needs it turns that into:
   (`fw pins`'s check).
 
 Each finding is either a **need** (something the board must provide) or a
-**problem** (something the firmware or the board breaks). The command exits
+**problem** (something the firmware or the board breaks), printed as
+`PROBLEM CODE: what` (in the JSON, `code`; the codes: PIN-NET, PIN-SHARED,
+PIN-FLASH, PIN-INPUT, PIN-RMII, STRAP-12, ADC2-WIFI, SPIRAM-OFF, PART-*,
+BOARD-*). The command exits
 0 with no problems, 1 with one, and 2 when there was nothing to read. Where
 to look is set by `constraints` in fw.json or in a target's pins;
 `pinmap`'s keys fill in what it leaves out:
@@ -211,11 +222,8 @@ to look is set by `constraints` in fw.json or in a target's pins;
                     "sources": ["components/hifi/esp/hifi_board_core.h", "patches/*.patch"],
                     "when": "HIFI_PLUS",            (Kconfig `default ... if X` lines for this board only)
                     "board": "../boards/core/kicad/core.net",
-                    "ignore": ["EXP_LED"]}          (names that aren't GPIOs: an expander's bit)
-
-The pins and board sections need `scripts/pins.py` (fw pins). An fw
-without it still reports the module, flash, memory, Ethernet and I2C needs,
-and says the pins weren't read.
+                    "ignore": ["EXP_LED"],          (names that aren't GPIOs: an expander's bit)
+                    "images": "sizes.json"}         (optional: image bytes per partition)
 
 ## Boards
 
@@ -241,41 +249,40 @@ work on.
   lookup, the host-test runner against `examples/hello`, the setup helpers
   and the CLI. It also checks that every example has a proof made on its
   current files (below).
-- **Proofs**, `bin/fw check-all [NAME] [--from DIR]`. This is not the
-  per-change test. It covers every firmware fw serves:
-  - `examples/<name>/`, this module's own examples;
-  - the real products in [targets.json](../targets.json), read from
-    their project's main branch (a target's `ref`, default `main`) in the
-    clone under `$HIVE_PROJECTS`, not from the clone's working tree. The
-    first is `hifi-lite`, the receiver's Lite firmware in hifi-receiver-2's
-    `firmware/`. `hifi-plus` and `hifi-ultra` are the same tree built for
-    the core board (`"env": {"HIFI_BOARD": "core"}` or `"ultra"`), each
-    with its own IDF tree and HTTP requests; QEMU has no I2S, so neither
-    the DAC's I2S0 nor the sub's I2S1 starts there.
-
-  `--from DIR` checks one target from another place, such as a branch that
-  hasn't merged. It writes `proof/<name>.next.json` beside the proof of
-  main's files, and the score counts whichever of the two was made on main's
-  current files, so a proof made ahead takes over when its branch merges. Each firmware is copied to a work dir and run through
-  `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
-  it has QEMU-only config). A target's pins in targets.json fill in what its
-  own `fw.json` lacks, and its IDF tree is kept in
-  `~/.cache/fw/check/<name>/` so later runs rebuild incrementally.
-
-  check-all writes `proof/<name>.json`: each stage's verdict, the IDF
-  version and a hash of the firmware's files. Run it after you change what a
-  firmware exercises, then commit `proof/`.
-- **Score**, `bin/fw score`, higher is better. It is the share of stages
-  (build, host-test, qemu, for every example and target) that a current
-  proof shows passing, as a percentage. A stale proof counts nothing. A
-  target is judged only on its project's main files: when they're missing
-  (no clone, no main, no such path) its stages are unproven, and a proof
-  made on a branch is stale until main has the same files. It reads files
-  only. To raise it:
-  - make a failing stage of the real product pass;
-  - add the next real firmware to targets.json;
-  - add an example that proves something new: another IDF version, another
-    chip, or a feature real firmware needs.
+- **Check-all**, `bin/fw check-all [NAME] [--from DIR]`. This is not the
+  per-change test. It builds, host-tests and boots (`fw build`,
+  `fw host-test`, `fw qemu`, with `fw build --qemu` first when there's
+  QEMU-only config) every firmware fw knows:
+  - `examples/<name>/`, this module's own examples. Their run is recorded
+    in `proof/<name>.json` (each stage's verdict, the IDF version, a hash of
+    the files), which the test holds to their files: run it after you change
+    an example, then commit `proof/`;
+  - the real products in [targets.json](../targets.json), read from their
+    project's main branch in the clone under `$HIVE_PROJECTS` (`--from DIR`:
+    a branch not merged). `hifi-lite`, `hifi-plus` and `hifi-ultra` are the
+    receiver's firmware for its three boards. Their runs are printed, not
+    recorded here: the product's own check proves its firmware. A target's
+    pins fill in what its own `fw.json` lacks, and its IDF tree is kept in
+    `~/.cache/fw/check/<name>/` so later runs rebuild incrementally.
+- **Score**, `bin/fw score`, higher is better: planted firmware faults fw's
+  checks catch, minus false alarms. The corpus is [faults/](../faults/): a
+  copy of a real firmware and its board (`faults/lite/`: the receiver's Lite
+  firmware and lite-main's netlist) with a `fw.json` for `fw constraints`, and `faults.json`,
+  the faults planted on it (find/replace edits: a wrong GPIO, a strap pin,
+  ADC2 with Wi-Fi, a partition past the flash, an image over its slot...).
+  Each fault is planted in a scratch copy of the base (in /dev/shm), and it
+  is caught when `fw constraints` reports a problem with it planted that it
+  doesn't on the clean base; every problem on a clean base costs a point. It
+  reads only this module's files, in about a second. It has no top:
+  to raise it,
+  - make a check catch a fault it misses (`fw score` prints each);
+  - add a fault kind real firmware gets wrong, with the check that catches
+    it (a fault its check can't catch yet is fine too: it shows what to
+    build next);
+  - add a base: another board's firmware (the core board's Plus and Ultra),
+    with its own clean files, on which `fw constraints` must find no problem.
+  The test holds the corpus: every fault plants, no base raises an error,
+  and a caught fault is caught by the check it names in `expect`.
 
 ## Be critical of the tools
 
