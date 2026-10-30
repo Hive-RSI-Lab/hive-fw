@@ -1,0 +1,14 @@
+# lite-main: the WROVER-E-N8R8 has 8 MB of flash. Two app slots, so a
+# firmware update is written beside the running image and a bad one rolls
+# back to it (docs/remote.md, "Firmware updates the Hive pushes"); the
+# factory recovery app stays as the last resort. Built 2026-10-28 with the
+# relay: recovery 1.52 MB in 1.75 MB, the main app 2.77 MB in 3.06 MB
+# (firmware/tools/build.sh checks both fit).
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x4000,
+otadata,  data, ota,     0xD000,   0x2000,
+phy_init, data, phy,     0xF000,   0x1000,
+recovery, app,  factory, 0x10000,  0x1C0000,
+ota_0,    app,  ota_0,   0x1D0000, 0x310000,
+ota_1,    app,  ota_1,   0x4E0000, 0x310000,
+settings, data, nvs,     0x7F0000, 0x10000,

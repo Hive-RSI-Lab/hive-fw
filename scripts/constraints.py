@@ -56,7 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fwlib  # noqa: E402
-import score  # noqa: E402
+import check_all  # noqa: E402
 
 try:  # fw pins (scripts/pins.py) reads the firmware's GPIOs and the board's nets
     import pins
@@ -226,7 +226,7 @@ def config(project: Path, target: str | None) -> tuple[dict, dict]:
     constraints config, with pinmap's keys filling in."""
     over = {}
     if target:
-        t = score.targets().get(target)
+        t = check_all.targets().get(target)
         if t is None:
             raise SystemExit(f"fw constraints: no target {target} in targets.json")
         over = t.get("pins", {})
@@ -524,8 +524,8 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     project = a.project
     if project is None:
-        t = score.targets().get(a.target) if a.target else None
-        project = score.target_dir(t) if t else Path(".")
+        t = check_all.targets().get(a.target) if a.target else None
+        project = check_all.target_dir(t) if t else Path(".")
     project = project.resolve()
     fwpins, cfg = config(project, a.target)
     if a.board:

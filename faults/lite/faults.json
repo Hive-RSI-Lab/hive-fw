@@ -1,0 +1,279 @@
+{
+ "about": "Planted faults on a copy of the hifi receiver's Lite firmware and board (hifi-receiver-2 main a7f32da). Each edit's find must occur exactly once; expect is the check meant to catch it. Each fault is a distinct real mistake: at most one per kind (expect) and site (the signal, setting or partition it breaks); a second fault of the same kind at the same site counts once.",
+ "faults": [
+  {
+   "id": "amp-sdz-wrong-gpio",
+   "expect": "PIN-NET",
+   "site": "PIN_AMP_SDZ",
+   "about": "the amp's shutdown on GPIO22, where the board has the LED",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define PIN_AMP_SDZ 21",
+     "replace": "#define PIN_AMP_SDZ 22"
+    }
+   ]
+  },
+  {
+   "id": "i2s-bck-ws-swapped",
+   "expect": "PIN-NET",
+   "site": "I2S BCK/WS",
+   "about": "I2S bit clock and word select swapped in the DAC config",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "bck=27,ws=25,do=26,di=35,sda=33,scl=32,i2c=16,mck=0\" if HIFI_LITE",
+     "replace": "bck=25,ws=27,do=26,di=35,sda=33,scl=32,i2c=16,mck=0\" if HIFI_LITE"
+    }
+   ]
+  },
+  {
+   "id": "pvdd-en-unconnected",
+   "expect": "PIN-NET",
+   "site": "PIN_PVDD_EN",
+   "about": "the PVDD switch driven on GPIO5, a pad the board leaves open",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define PIN_PVDD_EN 18",
+     "replace": "#define PIN_PVDD_EN 5"
+    }
+   ]
+  },
+  {
+   "id": "i2c-sda-on-flash",
+   "expect": "PIN-FLASH",
+   "site": "I2C_SDA",
+   "about": "I2C SDA on GPIO7, the module's flash data line",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define I2C_SDA 33",
+     "replace": "#define I2C_SDA 7"
+    }
+   ]
+  },
+  {
+   "id": "pd-pg-on-psram",
+   "expect": "PIN-FLASH",
+   "site": "PIN_PD_PG",
+   "about": "the PD good input on GPIO16, the WROVER's PSRAM chip select",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define PIN_PD_PG 4",
+     "replace": "#define PIN_PD_PG 16"
+    }
+   ]
+  },
+  {
+   "id": "pvdd-en-on-input-only",
+   "expect": "PIN-INPUT",
+   "site": "PIN_PVDD_EN",
+   "about": "the PVDD enable output on GPIO39 (the PVDD sense net, input only)",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define PIN_PVDD_EN 18",
+     "replace": "#define PIN_PVDD_EN 39"
+    }
+   ]
+  },
+  {
+   "id": "amp-sdz-on-strap12",
+   "expect": "STRAP-12",
+   "site": "PIN_AMP_SDZ",
+   "about": "the amp's shutdown moved to GPIO12 on board and firmware alike: a strap pin",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "#define PIN_AMP_SDZ 21",
+     "replace": "#define PIN_AMP_SDZ 12"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO21_33\"",
+     "replace": "\"SWAP\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO12_14\"",
+     "replace": "\"IO21_33\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"SWAP\"",
+     "replace": "\"IO12_14\""
+    }
+   ]
+  },
+  {
+   "id": "vbus-on-adc2",
+   "expect": "ADC2-WIFI",
+   "site": "ADC_VBUS",
+   "about": "VBUS sense moved to GPIO15 (ADC2) on board and firmware alike, with Wi-Fi on",
+   "edits": [
+    {
+     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
+     "find": "ADC1_CHANNEL_6 /* GPIO34",
+     "replace": "ADC2_CHANNEL_3 /* GPIO15"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO34_6\"",
+     "replace": "\"SWAP\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO15_23\"",
+     "replace": "\"IO34_6\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"SWAP\"",
+     "replace": "\"IO15_23\""
+    }
+   ]
+  },
+  {
+   "id": "button-volup-on-play",
+   "expect": "PIN-SHARED",
+   "site": "button VOLUP",
+   "about": "the volume-up button on GPIO19, the play button's",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "{\\\"gpio\\\":13,",
+     "replace": "{\\\"gpio\\\":19,"
+    }
+   ]
+  },
+  {
+   "id": "led-on-open-pad",
+   "expect": "PIN-NET",
+   "site": "LED",
+   "about": "the LED on GPIO2, a pad the board leaves open",
+   "edits": [
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "\"14=ir:nec,22=green:1\" if HIFI_LITE",
+     "replace": "\"14=ir:nec,2=green:1\" if HIFI_LITE"
+    }
+   ]
+  },
+  {
+   "id": "board-dout-lrck-swapped",
+   "expect": "PIN-NET",
+   "site": "board I2S DOUT/LRCK",
+   "about": "the board swaps I2S DOUT and LRCK at the module (a board fault the firmware meets)",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO26_11\"",
+     "replace": "\"SWAP\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"IO25_10\"",
+     "replace": "\"IO26_11\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"SWAP\"",
+     "replace": "\"IO25_10\""
+    }
+   ]
+  },
+  {
+   "id": "ota1-overlaps-settings",
+   "expect": "PART-OVERLAP",
+   "site": "ota_1",
+   "about": "ota_1 grown into the settings partition",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "ota_1,    app,  ota_1,   0x4E0000, 0x310000,",
+     "replace": "ota_1,    app,  ota_1,   0x4E0000, 0x320000,"
+    }
+   ]
+  },
+  {
+   "id": "flash-size-4mb",
+   "expect": "PART-FLASH",
+   "site": "CONFIG_ESPTOOLPY_FLASHSIZE",
+   "about": "the image built for 4 MB flash with an 8 MB table",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESPTOOLPY_FLASHSIZE=\"8MB\"",
+     "replace": "CONFIG_ESPTOOLPY_FLASHSIZE=\"4MB\""
+    }
+   ]
+  },
+  {
+   "id": "ota0-misaligned",
+   "expect": "PART-ALIGN",
+   "site": "ota_0",
+   "about": "ota_0 at an offset not on a 64 KB boundary",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "ota_0,    app,  ota_0,   0x1D0000, 0x310000,",
+     "replace": "ota_0,    app,  ota_0,   0x1D8000, 0x308000,"
+    }
+   ]
+  },
+  {
+   "id": "image-over-slot",
+   "expect": "PART-IMAGE",
+   "site": "ota_0",
+   "about": "ota_0 shrunk under the 2.77 MB main app",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "ota_0,    app,  ota_0,   0x1D0000, 0x310000,",
+     "replace": "ota_0,    app,  ota_0,   0x1D0000, 0x2A0000,"
+    }
+   ]
+  },
+  {
+   "id": "no-otadata",
+   "expect": "PART-OTA",
+   "site": "otadata",
+   "about": "two OTA slots and no otadata",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "otadata,  data, ota,     0xD000,   0x2000,\n",
+     "replace": ""
+    }
+   ]
+  },
+  {
+   "id": "nvs-over-table",
+   "expect": "PART-OVERLAP",
+   "site": "nvs",
+   "about": "nvs moved onto the partition table",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "nvs,      data, nvs,     0x9000,   0x4000,",
+     "replace": "nvs,      data, nvs,     0x8000,   0x4000,"
+    }
+   ]
+  },
+  {
+   "id": "psram-off-on-wrover",
+   "expect": "SPIRAM-OFF",
+   "site": "CONFIG_ESP32_SPIRAM_SUPPORT",
+   "about": "PSRAM support off while the firmware puts Bluetooth's buffers in PSRAM",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_SPIRAM_SUPPORT=y",
+     "replace": "# CONFIG_ESP32_SPIRAM_SUPPORT is not set"
+    }
+   ]
+  }
+ ]
+}

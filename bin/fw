@@ -13,11 +13,13 @@
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw ports                  the serial ports this sandbox can see
 #   fw bootlog LOG            judge a saved boot log
+#   fw lint [DIR]             what the firmware gets wrong about the chip and
+#                             board, from its files and the board's netlist
 #   fw constraints [PROJECT] [--target T] [--board F] [--json]
 #                             what the firmware needs from the board (hwde reads it)
 #   fw test                   this module's own tests (the per-change test)
-#   fw check-all              build, host-test and boot every example (slow)
-#   fw score                  the share of example stages proven (the score)
+#   fw check-all              build, host-test and boot every firmware (slow)
+#   fw score                  planted firmware faults the checks catch (the score)
 #
 # PROJECT defaults to the current directory; its fw.json pins the IDF
 # version and target (docs/README.md). Toolchains live in /hive/tools/fw
@@ -35,6 +37,7 @@ env | idf | build | flash | monitor | ports | doctor) exec "$py" "$s/fwidf.py" "
 host-test) exec "$py" "$s/hosttest.py" "$@" ;;
 qemu) exec "$py" "$s/qemu.py" "$@" ;;
 bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
+lint) exec "$py" "$s/lint.py" "$@" ;;
 check-all) exec "$py" "$s/check_all.py" "$@" ;;
 constraints) exec "$py" "$s/constraints.py" "$@" ;;
 score) exec "$py" "$s/score.py" "$@" ;;
@@ -42,7 +45,7 @@ test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2

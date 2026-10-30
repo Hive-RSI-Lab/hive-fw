@@ -1,137 +1,95 @@
-"""fw score: the share of firmware stages proven, as a percentage.
+"""fw score: how many planted firmware faults fw's checks catch.
 
     fw score            (or: python3 scripts/score.py)
 
-What's scored is every firmware fw serves, each with three stages: build,
-host-test and qemu (a boot in QEMU that reaches its expect line and stays
-up):
-  - examples/<name>/: this module's own examples;
-  - targets.json: real products in other Hive projects, first the hifi
-    receiver's Lite firmware (hifi-receiver-2's firmware/).
-A stage counts when proof/<name>.json, written by `fw check-all`, records it
-passed on the firmware's current inputs (a hash of its files), or
-proof/<name>.next.json does (check-all --from: a branch's files, which count
-once main has them). A target's
-files are those on its project's main branch (its "ref", in the clone under
-$HIVE_PROJECTS), never the clone's working tree, which may sit on a branch
-not merged: a target whose main files this machine can't read has nothing
-proven, and a proof made on any other files is stale. The score is
-100 x stages proven / stages, higher is better. It reads files only (main's
-through git, into a temporary dir); check-all makes the proofs and the test
-holds the examples' proofs to their files. A stage that can't pass yet stays counted, unproven: the
-score shows what's missing. Prints one line per firmware, then the number.
+The corpus is faults/<base>/: a copy of a real firmware's files (and its
+board's netlist) with a lint.json saying where things are (`fw lint`), and
+faults.json, the planted faults: each a list of edits (find, replace; each
+find must occur exactly once), read in place of the base's files. A fault is
+caught when fw's checks report an error with it planted that they don't
+report on the clean base. Each fault names its kind ("expect", the check it's for) and its "site"
+(the signal, setting or partition it breaks): a second fault of the same
+kind at the same site is a near-duplicate and counts nothing, so only a
+distinct real mistake raises the score. The score is faults caught minus
+false alarms (errors on a clean base),
+higher is better and unbounded: a new kind of fault, a new check, or a new
+base raises it. It reads the corpus only, nothing outside this module, so it
+reads the same in any sandbox. Prints one line per fault, then the number.
 """
 from __future__ import annotations
 
-import hashlib
-import io
 import json
-import os
-import subprocess
 import sys
-import tarfile
-import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import lint  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
-STAGES = ("build", "host-test", "qemu")
-SKIP = {"build", "build-host", "build-qemu", ".fw-src", ".git", "__pycache__"}
-SKIP_FILES = {"sdkconfig", "sdkconfig.old", "dependencies.lock"}
 
 
-def examples(root: Path = ROOT) -> list[str]:
-    return sorted(p.parent.name for p in (root / "examples").glob("*/fw.json"))
+def bases(root: Path = ROOT) -> list[Path]:
+    return sorted(p.parent for p in (root / "faults").glob("*/faults.json"))
 
 
-def targets(root: Path = ROOT) -> dict[str, dict]:
-    """targets.json: {name: {"project": p, "path": dir in it, "pins": {...}}}."""
-    f = root / "targets.json"
-    return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+def errors(base: Path, files: dict[str, str] | None = None) -> set[str]:
+    spec = json.loads((base / "lint.json").read_text(encoding="utf-8"))
+    return {str(f) for f in lint.lint(base, spec, files) if f.error}
 
 
-def project_dir(t: dict) -> Path:
-    return Path(os.environ.get("HIVE_PROJECTS", "/hive/projects")) / t["project"]
+def plant(base: Path, edits: list[dict]) -> tuple[dict[str, str], str]:
+    """The files the edits change, as they read with the fault planted; or
+    why it can't be."""
+    files: dict[str, str] = {}
+    for e in edits:
+        text = files.get(e["file"])
+        if text is None:
+            text = (base / e["file"]).read_text(encoding="utf-8")
+        n = text.count(e["find"])
+        if n != 1:
+            return {}, f"{e['file']}: {e['find']!r} found {n} times"
+        files[e["file"]] = text.replace(e["find"], e["replace"])
+    return files, ""
 
 
-def target_dir(t: dict) -> Path:
-    return project_dir(t) / t.get("path", ".")
+def run(root: Path = ROOT, out=sys.stdout) -> dict:
+    """{"caught": n, "faults": n, "false_alarms": n, "results": [...]}."""
+    caught = total = alarms = 0
+    results = []
+    for b in bases(root):
+        clean = errors(b)
+        alarms += len(clean)
+        for x in sorted(clean):
+            print(f"{b.name}: false alarm on the clean base: {x}", file=out)
+        seen: set[tuple[str, str]] = set()
+        for fault in json.loads((b / "faults.json").read_text(encoding="utf-8"))["faults"]:
+            key = (fault.get("expect", ""), fault.get("site", fault["id"]))
+            if key in seen:
+                results.append({"base": b.name, "id": fault["id"], "caught": False, "by": [],
+                                "broken": "", "duplicate": True})
+                print(f"{b.name}/{fault['id']}: DUPLICATE of another {key[0]} fault at {key[1]}; not counted", file=out)
+                continue
+            seen.add(key)
+            total += 1
+            files, why = plant(b, fault["edits"])
+            new = sorted(errors(b, files) - clean) if not why else []
+            hit = bool(new)
+            caught += hit
+            by = sorted({x.split(":", 1)[0] for x in new})
+            results.append({"base": b.name, "id": fault["id"], "caught": hit, "by": by, "broken": why,
+                            "duplicate": False})
+            line = f"caught by {', '.join(by)}" if hit else f"BROKEN: {why}" if why else \
+                f"missed (meant for {fault.get('expect', '?')})"
+            print(f"{b.name}/{fault['id']}: {line}", file=out)
+    if not total:
+        raise SystemExit("fw score: no faults under faults/*/faults.json")
+    print(f"{caught}/{total} faults caught, {alarms} false alarm(s)", file=out)
+    return {"caught": caught, "faults": total, "false_alarms": alarms, "results": results}
 
 
-def main_files(t: dict, dest: Path) -> Path | str:
-    """The target's files as its project's main branch has them (t["ref"],
-    default main), written under dest; or why they can't be read."""
-    proj, ref, sub = project_dir(t), t.get("ref", "main"), t.get("path", ".")
-    where = f"{t['project']}@{ref}:{sub}"
-    if not proj.is_dir():
-        return f"not on this machine ({proj})"
-    r = subprocess.run(["git", "-C", str(proj), "archive", "--format=tar", ref, "--", sub],
-                       capture_output=True)
-    if r.returncode != 0:
-        err = r.stderr.decode(errors="replace").strip().splitlines()[-1:] or [""]
-        return f"can't read {where} ({err[0][:120]})"
-    try:
-        with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
-            tf.extractall(dest, filter="data")
-    except (tarfile.TarError, OSError) as e:
-        return f"can't read {where} ({e})"
-    d = dest / sub
-    return d if d.is_dir() else f"{where} is not a directory"
-
-
-def firmware(work: Path, root: Path = ROOT) -> dict[str, Path | str]:
-    """Every scored firmware's name and its files, a target's from its
-    project's main written under work (a str: why they can't be read)."""
-    out: dict[str, Path | str] = {n: root / "examples" / n for n in examples(root)}
-    for n, t in targets(root).items():
-        (work / n).mkdir(parents=True, exist_ok=True)
-        out[n] = main_files(t, work / n)
-    return out
-
-
-def inputs_hash(example: Path) -> str:
-    """sha256 over the firmware's files (paths and contents), build output left out."""
-    h = hashlib.sha256()
-    for f in sorted(example.rglob("*")):
-        rel = f.relative_to(example)
-        if f.is_dir() or rel.parts[0] in SKIP or f.name in SKIP_FILES:
-            continue
-        h.update(str(rel).encode() + b"\0" + f.read_bytes() + b"\0")
-    return h.hexdigest()
-
-
-def proven(root: Path, name: str, src: Path | str) -> tuple[list[str], str]:
-    """The stages proof/<name>.json shows passing on current inputs, and why
-    none count when it's missing or stale. src a str: inputs can't be read,
-    so nothing is proven."""
-    if isinstance(src, str):
-        return [], f"unproven: {src}"
-    recs = [json.loads(p.read_text(encoding="utf-8")) for p in proof_files(root, name) if p.is_file()]
-    if not recs:
-        return [], "no proof (fw check-all)"
-    h = inputs_hash(src)
-    rec = next((r for r in recs if r.get("inputs") == h), None)
-    if rec is None:
-        return [], "proof is stale: the files changed since (fw check-all)"
-    return [s for s in STAGES if rec.get("stages", {}).get(s) == "pass"], ""
-
-
-def proof_files(root: Path, name: str) -> list[Path]:
-    """proof/<name>.json, made on main's files, and proof/<name>.next.json,
-    made with check-all --from on a branch not merged yet: whichever was
-    made on main's current files counts, so a proof made ahead takes over
-    the moment its branch merges."""
-    return [root / "proof" / f"{name}.json", root / "proof" / f"{name}.next.json"]
-
-
-def score(root: Path = ROOT, out=sys.stdout) -> float:
-    total = done = 0
-    with tempfile.TemporaryDirectory(prefix="fw-score-") as work:
-        for n, src in firmware(Path(work), root).items():
-            ok, why = proven(root, n, src)
-            total += len(STAGES)
-            done += len(ok)
-            print(f"{n}: {len(ok)}/{len(STAGES)} {' '.join(ok)}{'  ' + why if why else ''}", file=out)
-    return round(100.0 * done / total, 1) if total else 0.0
+def score(root: Path = ROOT, out=sys.stdout) -> int:
+    r = run(root, out)
+    return r["caught"] - r["false_alarms"]
 
 
 if __name__ == "__main__":

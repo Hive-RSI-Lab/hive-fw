@@ -84,6 +84,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
+| `fw lint [DIR] [--spec F]` | Reads the firmware's pins (C headers, squeezelite Kconfig defaults), sdkconfig, partition table and the board's KiCad netlist, as `DIR/lint.json` points, and reports what's wrong without a build: a pin whose board net doesn't carry its name or is open (PIN-NET), one GPIO with two jobs (PIN-SHARED), the flash or PSRAM pins (PIN-FLASH), an output on GPIO34-39 (PIN-INPUT), GPIO12 (STRAP-12), ADC2 with Wi-Fi (ADC2-WIFI), and partitions that overlap, run past the flash, are misaligned, lack otadata, or hold an image bigger than the slot (PART-*). Board nets no firmware pin names are notes. Exit 1 on an error. |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
 (`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
@@ -241,41 +242,41 @@ work on.
   lookup, the host-test runner against `examples/hello`, the setup helpers
   and the CLI. It also checks that every example has a proof made on its
   current files (below).
-- **Proofs**, `bin/fw check-all [NAME] [--from DIR]`. This is not the
-  per-change test. It covers every firmware fw serves:
-  - `examples/<name>/`, this module's own examples;
-  - the real products in [targets.json](../targets.json), read from
-    their project's main branch (a target's `ref`, default `main`) in the
-    clone under `$HIVE_PROJECTS`, not from the clone's working tree. The
-    first is `hifi-lite`, the receiver's Lite firmware in hifi-receiver-2's
-    `firmware/`. `hifi-plus` and `hifi-ultra` are the same tree built for
-    the core board (`"env": {"HIFI_BOARD": "core"}` or `"ultra"`), each
-    with its own IDF tree and HTTP requests; QEMU has no I2S, so neither
-    the DAC's I2S0 nor the sub's I2S1 starts there.
-
-  `--from DIR` checks one target from another place, such as a branch that
-  hasn't merged. It writes `proof/<name>.next.json` beside the proof of
-  main's files, and the score counts whichever of the two was made on main's
-  current files, so a proof made ahead takes over when its branch merges. Each firmware is copied to a work dir and run through
-  `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
-  it has QEMU-only config). A target's pins in targets.json fill in what its
-  own `fw.json` lacks, and its IDF tree is kept in
-  `~/.cache/fw/check/<name>/` so later runs rebuild incrementally.
-
-  check-all writes `proof/<name>.json`: each stage's verdict, the IDF
-  version and a hash of the firmware's files. Run it after you change what a
-  firmware exercises, then commit `proof/`.
-- **Score**, `bin/fw score`, higher is better. It is the share of stages
-  (build, host-test, qemu, for every example and target) that a current
-  proof shows passing, as a percentage. A stale proof counts nothing. A
-  target is judged only on its project's main files: when they're missing
-  (no clone, no main, no such path) its stages are unproven, and a proof
-  made on a branch is stale until main has the same files. It reads files
-  only. To raise it:
-  - make a failing stage of the real product pass;
-  - add the next real firmware to targets.json;
-  - add an example that proves something new: another IDF version, another
-    chip, or a feature real firmware needs.
+- **Check-all**, `bin/fw check-all [NAME] [--from DIR]`. This is not the
+  per-change test. It builds, host-tests and boots (`fw build`,
+  `fw host-test`, `fw qemu`, with `fw build --qemu` first when there's
+  QEMU-only config) every firmware fw knows:
+  - `examples/<name>/`, this module's own examples. Their run is recorded
+    in `proof/<name>.json` (each stage's verdict, the IDF version, a hash of
+    the files), which the test holds to their files: run it after you change
+    an example, then commit `proof/`;
+  - the real products in [targets.json](../targets.json), read from their
+    project's main branch in the clone under `$HIVE_PROJECTS` (`--from DIR`:
+    a branch not merged). `hifi-lite`, `hifi-plus` and `hifi-ultra` are the
+    receiver's firmware for its three boards. Their runs are printed, not
+    recorded here: the product's own check proves its firmware. A target's
+    pins fill in what its own `fw.json` lacks, and its IDF tree is kept in
+    `~/.cache/fw/check/<name>/` so later runs rebuild incrementally.
+- **Score**, `bin/fw score`, higher is better: planted firmware faults fw's
+  checks catch, minus false alarms. The corpus is [faults/](../faults/): a
+  copy of a real firmware and its board (`faults/lite/`: the receiver's Lite
+  firmware and lite-main's netlist) with a `lint.json`, and `faults.json`,
+  the faults planted on it (find/replace edits: a wrong GPIO, a strap pin,
+  ADC2 with Wi-Fi, a partition past the flash, an image over its slot...).
+  A fault is caught when `fw lint` reports an error with it planted that it
+  doesn't on the clean base; every error on a clean base costs a point.
+  Each fault names its kind (`expect`) and `site`; a second fault of the
+  same kind at the same site is a near-duplicate and counts nothing. It
+  reads only this module's files, in a fraction of a second. It has no top:
+  to raise it,
+  - make a check catch a fault it misses (`fw score` prints each);
+  - add a fault kind real firmware gets wrong, with the check that catches
+    it (a fault its check can't catch yet is fine too: it shows what to
+    build next);
+  - add a base: another board's firmware (the core board's Plus and Ultra),
+    with its own clean files, which must lint clean.
+  The test holds the corpus: every fault plants, no base raises an error,
+  and a caught fault is caught by the check it names in `expect`.
 
 ## Be critical of the tools
 
