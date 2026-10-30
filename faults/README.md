@@ -16,6 +16,16 @@ fails on it, so restating a fault can't raise the score.
   `firmware/` files the checks read, and `boards/lite-main/kicad/lite-main.net`).
   `sizes.json` holds its images' sizes from the 2026-10-28 build that
   `partitions.csv`'s header records (recovery 1.52 MB, main app 2.77 MB).
+- `core/`: the Plus firmware on the core board (hifi-receiver-2 main ac484b1:
+  `firmware/` files the hifi-plus target's constraints read, and
+  `boards/core/kicad/core.net`): the Sabre DAC, the line-in ADC, the sub
+  DAC, the PD sink and the I/O expander, for the audio path's checks; and
+  faults real to that board elsewhere: the ESP32's pins against the FFC's
+  LCD lines and the RMII, the straps its pulls set, the WROVER's PSRAM and
+  flash, the table, and the TCA9539 (U17) that carries the TPA3220s' resets
+  and flags, PVDD_EN and the ultra-front backlight (EXP-NET, EXP-ADDR,
+  EXP-DIR). Ultra builds the same pins and patch lines (HIFI_PLUS ||
+  HIFI_ULTRA), so one base covers both.
 
 The bases are copies, so the score never depends on another project's
 clone. When the product's firmware or board moves on, refresh a base by

@@ -19,7 +19,12 @@ target (--target, with PROJECT its files, default the target's own dir):
                "sources": ["main/board.h", "patches/*.patch"],
                "nets": {"ACTRLS_TOGGLE": "BTN_PLAY"},     (name -> its net)
                "when": "HIFI_LITE",     (Kconfig `default ... if COND` lines
-                                         count only when COND names it)
+                                         count only when COND names it;
+                                         without it, when COND holds in
+                                         the board's sdkconfig: pinmap's
+                                         sdkconfig, the project's, or the
+                                         sdkconfig.defaults in a folder
+                                         named for the board)
                "ignore": ["PIN_SPARE"]}
 
 A board is a netlist (.net), a schematic (.kicad_sch, exported to a netlist
@@ -133,12 +138,15 @@ def has_psram(value: str, footprint: str) -> bool:
 class Board:
     """The ESP32 on a board: ref, part, GPIO -> net (None: unconnected), and
     from a netlist, net -> [(resistor, "up" or "down")] for the resistors
-    that tie a net to a supply or to ground."""
+    that tie a net to a supply or to ground; the board's other parts (ref ->
+    value) and net -> [(ref, pin name)] for every part's pins."""
 
     def __init__(self, path: Path, ref: str, part: str, gpios: dict[int, str | None], psram: bool,
-                 pulls: dict[str, list[tuple[str, str]]] | None = None):
+                 pulls: dict[str, list[tuple[str, str]]] | None = None,
+                 parts: dict[str, str] | None = None, nets: dict[str, list[tuple[str, str]]] | None = None):
         self.path, self.ref, self.part, self.gpios, self.psram = path, ref, part, gpios, psram
         self.pulls = pulls or {}
+        self.parts, self.nets = parts or {}, nets or {}
 
 
 SUPPLY = re.compile(r"\+?(?:3V3|3\.3V|VCC|VDD)\w*", re.I)
@@ -160,11 +168,14 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
             comps[val(c, "ref")] = (val(c, "value"), val(c, "footprint"))
     found: dict[str, dict[int, str | None]] = {}
     res_nets: dict[str, list[str | None]] = {}
+    all_nets: dict[str, list[tuple[str, str]]] = {}
     for nets in kids(root, "nets"):
         for n in kids(nets, "net"):
             name = net_name(val(n, "name"))
             for node in kids(n, "node"):
                 ref = val(node, "ref")
+                if name:
+                    all_nets.setdefault(name, []).append((ref, val(node, "pinfunction")))
                 if re.fullmatch(r"R\d+", ref):
                     res_nets.setdefault(ref, []).append(name)
                 value, fp = comps.get(ref, ("", ""))
@@ -182,13 +193,28 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
             to = "up" if SUPPLY.fullmatch(b) else "down" if GROUND.fullmatch(b) else None
             if to and not (SUPPLY.fullmatch(a) or GROUND.fullmatch(a)):
                 pulls.setdefault(a, []).append((ref, to))
-    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls)
+    parts = {r: v for r, (v, _) in comps.items()}
+    return [Board(path, r, comps.get(r, ("", ""))[0], g, has_psram(*comps.get(r, ("", ""))), pulls, parts, all_nets)
             for r, g in sorted(found.items())]
 
 
 def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
     root = sexp(text)
     out = []
+    parts: dict[str, str] = {}
+    all_nets: dict[str, list[tuple[str, str]]] = {}
+    for fp in kids(root, "footprint"):
+        ref = value = ""
+        for p in kids(fp, "property"):
+            if len(p) > 2 and p[1] in ("Reference", "Value"):
+                ref, value = (p[2], value) if p[1] == "Reference" else (ref, p[2])
+        parts[ref] = value
+        for pad in kids(fp, "pad"):
+            net = kids(pad, "net")
+            nm = net[0][-1] if net and isinstance(net[0][-1], str) else ""
+            nm = net_name("" if nm.isdigit() and len(net[0]) == 2 else nm)  # (net 0) is no net
+            if nm:
+                all_nets.setdefault(nm, []).append((ref, val(pad, "pinfunction")))
     for fp in kids(root, "footprint"):
         ref = value = ""
         for p in kids(fp, "property"):
@@ -214,7 +240,7 @@ def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
             nm = "" if nm.isdigit() and len(net[0]) == 2 else nm  # (net 0) is no net
             gpios[g] = net_name(nm)
         if gpios:
-            out.append(Board(path, ref, value, gpios, has_psram(value, name)))
+            out.append(Board(path, ref, value, gpios, has_psram(value, name), None, parts, all_nets))
     return out
 
 
@@ -355,11 +381,94 @@ def source_lines(project: Path, globs: list[str]):
                 yield f"{p.relative_to(project) if p.is_relative_to(project) else p}:{i}", line
 
 
-def firmware_pins(project: Path, globs: list[str], when: str | None = None) -> list[dict]:
+SKIP_DIRS = {"build", "managed_components", "node_modules", "upstream", "components"}
+
+
+def kconfig_symbols(path: Path) -> dict[str, bool]:
+    """An sdkconfig's bool symbols, CONFIG_ dropped: =y True, =n or
+    `# CONFIG_X is not set` False."""
+    out = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = re.match(r"\s*CONFIG_(\w+)=([yn])\s*$", line) or re.match(r"\s*#\s*CONFIG_(\w+) is not set", line)
+        if m:
+            out[m.group(1)] = m.lastindex == 2 and m.group(2) == "y"
+    return out
+
+
+def board_sdkconfig(project: Path, cfg: dict) -> Path | None:
+    """The sdkconfig the firmware is built with for this board: cfg's
+    sdkconfig, else the project's sdkconfig or sdkconfig.defaults, else the
+    one sdkconfig.defaults in a folder named for the board (board/lite-main/
+    for ../boards/lite-main/kicad/lite-main.kicad_pcb)."""
+    for c in ([cfg["sdkconfig"]] if cfg.get("sdkconfig") else ["sdkconfig", "sdkconfig.defaults"]):
+        if (project / c).is_file():
+            return project / c
+    if cfg.get("sdkconfig"):
+        return None
+    boards = cfg.get("board") or []
+    names = set()
+    for b in [boards] if isinstance(boards, str) else boards:
+        bp = Path(b)
+        names |= {bp.stem} | {x for x in bp.parent.parts if x not in ("..", ".", "/", "kicad", "boards", "board")}
+    if not names:
+        return None
+    found = []
+    for root, dirs, files in os.walk(project):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS]
+        if "sdkconfig.defaults" in files and Path(root).name in names:
+            found.append(Path(root) / "sdkconfig.defaults")
+    return found[0] if len(found) == 1 else None
+
+
+def cond_of(line: str) -> str | None:
+    """COND of a Kconfig `default ... if COND` line."""
+    m = re.search(r"\sif\s+([^\"]+?)\s*$", line)
+    return m.group(1) if m else None
+
+
+def cond_holds(cond: str, when) -> bool:
+    """Whether a line `... if COND` counts. when is a symbol (COND must name
+    it) or an sdkconfig's {symbol: bool} (COND must hold; a symbol it
+    doesn't set is off, as in Kconfig). A COND this can't read counts."""
+    if not when:
+        return True
+    if isinstance(when, str):
+        return bool(re.search(rf"\b{re.escape(when)}\b", cond))
+    expr = []
+    for t in re.findall(r"\|\||&&|!=|!|\(|\)|\w+|\S", cond):
+        if t in ("||", "&&", "!", "(", ")"):
+            expr.append({"||": " or ", "&&": " and ", "!": " not "}.get(t, t))
+        elif re.fullmatch(r"[A-Za-z_]\w*", t):
+            expr.append(str(bool(when.get(t))))
+        else:
+            return True
+    try:
+        return bool(eval("".join(expr), {"__builtins__": {}}))
+    except SyntaxError:
+        return True
+
+
+def resolve_when(project: Path, cfg: dict):
+    """cfg's when, else the board's sdkconfig's symbols when it sets one
+    that a source's `if COND` line names, else None (every line counts)."""
+    if cfg.get("when"):
+        return cfg["when"]
+    sdk = board_sdkconfig(project, cfg)
+    if sdk is None:
+        return None
+    syms = kconfig_symbols(sdk)
+    for _, line in source_lines(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"]):
+        c = cond_of(line)
+        if c and any(t in syms for t in re.findall(r"\w+", c)):
+            return syms
+    return None
+
+
+def firmware_pins(project: Path, globs: list[str], when=None) -> list[dict]:
     """[{"gpio", "name", "where"}] read from the sources. With when (a
-    Kconfig symbol), a line that ends in `if COND` counts only when COND
-    names it, so one Kconfig carrying several boards' defaults gives one
-    board's pins."""
+    Kconfig symbol, or an sdkconfig's symbols: cond_holds), a line that ends
+    in `if COND` counts only when COND holds for it, so one Kconfig carrying
+    several boards' defaults gives one board's pins."""
     out = []
 
     def add(g, name, where):
@@ -367,8 +476,8 @@ def firmware_pins(project: Path, globs: list[str], when: str | None = None) -> l
             out.append({"gpio": g, "name": name, "where": where})
 
     for where, line in source_lines(project, globs):
-        cond = re.search(r"\sif\s+([^\"]+?)\s*$", line)
-        if when and cond and not re.search(rf"\b{re.escape(when)}\b", cond.group(1)):
+        cond = cond_of(line)
+        if cond and not cond_holds(cond, when):
             continue
         m = re.match(r"\s*#\s*define\s+(\w+)\s+\(?\s*(?:GPIO_NUM_)?(\d+)\s*\)?\s*(?:/[/*].*)?$", line)
         if m and (set(m.group(1).upper().split("_")) & ({"PIN", "GPIO", "IO"} | SIGNALS)):
@@ -430,7 +539,7 @@ def check(project: Path, cfg: dict) -> dict:
     if not boards:
         res["error"] = "no board: pinmap.board names none"
         return res
-    pins = firmware_pins(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"], cfg.get("when"))
+    pins = firmware_pins(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"], resolve_when(project, cfg))
     ignore = set(cfg.get("ignore") or [])
     pins = [p for p in pins if p["name"] not in ignore]
     if not pins:
