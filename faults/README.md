@@ -12,12 +12,13 @@ site. A second fault of the same kind at the same site is a near-duplicate:
 `fw score` prints it as DUPLICATE and counts nothing for it, and the test
 fails on it, so restating a fault can't raise the score.
 
-- `lite/`: the hifi receiver's Lite firmware (hifi-receiver-2 main a7f32da:
+- `lite/`: the hifi receiver's Lite firmware (hifi-receiver-2 main b485714:
   `firmware/` files the checks read, and `boards/lite-main/kicad/lite-main.net`).
   `sizes.json` holds its images' sizes from the 2026-10-28 build that
   `partitions.csv`'s header records (recovery 1.52 MB, main app 2.77 MB).
-- `core/`: the Plus firmware on the core board (hifi-receiver-2 main ac484b1:
-  `firmware/` files the hifi-plus target's constraints read, and
+- `core/`: the Plus firmware on the core board (hifi-receiver-2 main b485714:
+  `firmware/` files the hifi-plus target's constraints read (board_core.c
+  too, so EXP-DIR sees which expander bits the code writes), and
   `boards/core/kicad/core.net`): the Sabre DAC, the line-in ADC, the sub
   DAC, the PD sink and the I/O expander, for the audio path's checks; and
   faults real to that board elsewhere: the ESP32's pins against the FFC's
@@ -26,6 +27,14 @@ fails on it, so restating a fault can't raise the score.
   and flags, PVDD_EN and the ultra-front backlight (EXP-NET, EXP-ADDR,
   EXP-DIR). Ultra builds the same pins and patch lines (HIFI_PLUS ||
   HIFI_ULTRA), so one base covers both.
+
+A fault taken from the product's own history (a mistake a review found and
+a commit fixed) says so in `from`: the review finding and the commit. The
+bases' first such faults: Lite's LINE_DIVIDER left at 2.0 after R30/R31 went
+15k/10k (R3-DIGITAL-5), core's LAN8720 left at squeezelite's hard-coded SMI
+address 1 on a board that straps 0 (R3-DIGITAL-2), and core's P17 named
+LCD_CS where the board has TAP_SEL_IO (R3-DIGITAL-4). More are in the
+product's docs/review-*/ findings and dispositions.
 
 The bases are copies, so the score never depends on another project's
 clone. When the product's firmware or board moves on, refresh a base by

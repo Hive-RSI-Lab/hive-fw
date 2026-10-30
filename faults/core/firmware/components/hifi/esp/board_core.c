@@ -18,6 +18,7 @@
 #include "esp_adc_cal.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_rom_gpio.h"
@@ -49,6 +50,11 @@ static TaskHandle_t ctrl_task;
 static esp_adc_cal_characteristics_t adc_chars;
 static uint32_t last_pd;
 static uint8_t vreq_sent = 0xFF;
+static float vreq_v;                 /* the voltage asked for, 0 before */
+static uint32_t t_pd;                /* when this PD contract came in */
+static bool pd_was;
+static float cap_v[7], cap_i[7];     /* the source's fixed PDOs */
+static int cap_n = -1;               /* -1 not read for this contract */
 
 static volatile bool zone_b;        /* Ultra: zone B's amp on with zone A's */
 static bool amps_a, amps_b, resync;
@@ -116,9 +122,20 @@ static esp_err_t dac_init(void) {
 
 /* ------------------------------------------------------------------ init */
 
+/* Before a software restart (OTA, the API's reboot): the 50 MHz PHY clock
+ * off, since a restart doesn't move EN and the expander would keep it on
+ * GPIO0, the boot strap (firmware requirement C1, review-3 R3-DIGITAL-1).
+ * A brownout or a watchdog reset skips this: the board's EN supervisor
+ * covers those */
+static void phy_clock_off(void) {
+	if (!exp_addr) return;
+	exp_out(hifi_exp_bit(hifi_exp_bit(hifi_exp_bit(out0, EXP_PHY_RST, false), EXP_AMP_A_RST, false), EXP_AMP_B_RST, false));
+}
+
 void hifi_bsp_init(hifi_power_cfg_t *pc, hifi_gov_cfg_t *gc) {
 	exp_lock = xSemaphoreCreateMutex();
 	exp_init();
+	esp_register_shutdown_handler(phy_clock_off);
 	vTaskDelay(pdMS_TO_TICKS(20)); /* the DAC leaves reset, the PHY's clock starts */
 	dac_init();
 
@@ -151,6 +168,7 @@ void hifi_bsp_power_in(uint32_t now, hifi_bsp_power_t *p) {
 	p->vbus_i_a = sum / 8 < ISENSE_RAW_FLOOR ? 0.0f
 		    : esp_adc_cal_raw_to_voltage(sum / 8, &adc_chars) / 1000.0f / ISENSE_V_PER_A;
 	p->fault = !(in_pins >> EXP_AMP_FAULT & 1);
+	p->otw = !(in_pins >> EXP_AMP_OTW & 1);
 	p->pvdd_v = NAN; /* no PVDD sense on core */
 
 	p->pd_read = now - last_pd >= 500;
@@ -160,17 +178,44 @@ void hifi_bsp_power_in(uint32_t now, hifi_bsp_power_t *p) {
 		p->sink_ok = hifi_i2c_read(CH224_I2C_ADDR, CH224_REG_STATUS, &p->pd_status) == ESP_OK &&
 			     hifi_i2c_read(CH224_I2C_ADDR, CH224_REG_CURRENT, &p->pd_current) == ESP_OK;
 		if (!p->sink_ok) p->pd_current = 0;
-		/* once a PD contract is in: 28 V when the source offers EPR, else 20 V */
+		bool pd = p->sink_ok && (p->pd_status & 0x18);
+		if (pd && !pd_was) {
+			t_pd = now;
+			cap_n = -1;
+		}
+		if (!pd) {
+			cap_n = -1;
+			vreq_sent = 0xFF;
+			vreq_v = 0;
+		}
+		pd_was = pd;
+		/* the source's fixed PDOs, once a contract: a charger without 20 V
+		 * (5/9/12/15 V phone chargers) is asked for what it has, so the
+		 * floor and the governor see the real voltage (review-3 R3-POWER-4) */
+		if (pd && cap_n < 0) {
+			uint8_t raw[CH224_SRCCAP_LEN];
+			int k = 0;
+			while (k < CH224_SRCCAP_LEN && hifi_i2c_read(CH224_I2C_ADDR, CH224_REG_SRCCAP + k, &raw[k]) == ESP_OK) k++;
+			cap_n = k == CH224_SRCCAP_LEN ? hifi_pd_srccap_fixed(raw, k, cap_v, cap_i, 7) : 0;
+			ESP_LOGI(TAG, "source lists %d fixed PDOs%s", cap_n, cap_n ? "" : " (unread: assuming 20 V)");
+			for (int j = 0; j < cap_n; j++) ESP_LOGI(TAG, "  %.1f V %.2f A", cap_v[j], cap_i[j]);
+		}
+		/* once a PD contract is in: 28 V when the source offers EPR, else
+		 * the highest fixed PDO up to 20 V */
 		uint8_t code = 0;
-		float v = p->sink_ok ? hifi_ch224_request(p->pd_status, &code) : 0;
+		float v = pd ? hifi_ch224_request(p->pd_status, cap_v, cap_n > 0 ? cap_n : 0, &code) : 0;
 		if (v > 0 && code != vreq_sent && hifi_i2c_write(CH224_I2C_ADDR, CH224_REG_VREQ, code) == ESP_OK) {
 			ESP_LOGI(TAG, "asked the charger for %.0f V", v);
 			vreq_sent = code;
+			vreq_v = v;
+			t_pd = now; /* the contract changes: settle from here */
 		}
-		/* a PD contract in place (the CH224Q's PG also gates PVDD in
-		 * hardware); between reads, p keeps the last */
-		p->pg = p->sink_ok && (p->pd_status & 0x18);
-		p->vbus_v = p->sink_ok ? hifi_ch224_vbus(p->pd_status) : 5.0f;
+		/* a PD contract in place and settled (the CH224Q's PG also gates
+		 * PVDD in hardware): with EPR offered, only once EPR is in, so the
+		 * 20 -> 28 V step doesn't land on a closed PVDD switch (R3-POWER-5);
+		 * between reads, p keeps the last */
+		p->pg = pd && hifi_ch224_settled(p->pd_status, now - t_pd, 3000);
+		p->vbus_v = p->sink_ok ? hifi_ch224_vbus(p->pd_status, vreq_v) : 5.0f;
 	}
 }
 

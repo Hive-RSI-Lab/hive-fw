@@ -43,8 +43,13 @@ straps (no two at one address on a bus, and the firmware's *_ADDR the one
 the board straps). The audio checks read the other parts' pin names, which
 a netlist or schematic has and a KiCad 10 layout's pads don't. From a
 netlist, also the resistors and capacitors around the ESP32: EN's reset
-RC, UART0's TX meeting the USB-UART's RX, I2C pull-ups, and buttons whose
-input nothing pulls. Each finding is a need (what the board must provide)
+RC, UART0's TX meeting the USB-UART's RX, I2C pull-ups, buttons whose
+input nothing pulls, each *_DIVIDER a reading is scaled by against the
+resistors that divide it (the ones its comment names, else the pair on
+its ADC_* pin), and a LAN8720's SMI address against its PHYAD0 strap
+(squeezelite-esp32 hard-codes 1 unless a patch sets it). An expander
+output the code never names past its #define may stay an input (a pull on
+the board holds it). Each finding is a need (what the board must provide)
 or a problem (the firmware or the board breaks one); exit 0 with no
 problems, 1 with one, 2 when there was nothing to read.
 
@@ -84,6 +89,7 @@ import pins  # noqa: E402  (fw pins reads the firmware's GPIOs and the board's n
 FLASH = {6, 7, 8, 9, 10, 11}
 PSRAM = {16, 17}
 INPUT_ONLY = {34, 35, 36, 37, 38, 39}
+ADC1 = {0: 36, 1: 37, 2: 38, 3: 39, 4: 32, 5: 33, 6: 34, 7: 35}
 ADC2 = {0: 4, 1: 0, 2: 2, 3: 15, 4: 13, 5: 12, 6: 14, 7: 27, 8: 25, 9: 26}
 STRAPS = {
     0: "GPIO0 must be high at reset (low enters download mode): whatever drives it must "
@@ -416,11 +422,13 @@ EXP_IN = {"FAULT", "FAULTZ", "OTW", "CLIP", "ENC", "BTN", "BUTTON", "SW", "KEY",
 
 
 def expander_problems(e, bits: list[dict], addrs: dict | None, cfg: dict[int, tuple[int, str]],
-                      prefix: str) -> list[tuple[str, str, str]]:
+                      prefix: str, used: set[str] | None = None) -> list[tuple[str, str, str]]:
     """The firmware's expander bits against the board's expander: each bit on
     the net its name best matches, the strapped address among the ones the
     firmware tries, and each output/input set that way in the direction
-    registers. [(code, problem, where)]."""
+    registers. used, when the sources show the code: the bits it names past
+    their #define; an output it never writes, left an input, is the board's
+    pulls holding the pin on purpose. [(code, problem, where)]."""
     out = []
     nets = {b: n for b, n in e.bits.items()}
     strip = lambda name: name[len(prefix):] if name.startswith(prefix) else name  # noqa: E731
@@ -454,13 +462,103 @@ def expander_problems(e, bits: list[dict], addrs: dict | None, cfg: dict[int, tu
             is_in = bool(val >> (b % 8) & 1)
             words = set(strip(x["name"]).upper().split("_"))
             out_w, in_w = bool(words & EXP_OUT), bool(words & EXP_IN)
-            if out_w and not in_w and is_in:
+            if out_w and not in_w and is_in and (used is None or x["name"] in used):
                 out.append(("EXP-DIR", f"{x['name']} (P{b // 8}{b % 8}) is an output, but {prefix}CFG{b // 8} "
                             f"{val:#04x} makes it an input: the firmware's writes never reach the pin", where))
             elif in_w and not out_w and not is_in:
                 out.append(("EXP-DIR", f"{x['name']} (P{b // 8}{b % 8}) is an input, but {prefix}CFG{b // 8} "
                             f"{val:#04x} makes it an output: the expander drives against the signal", where))
     return out
+
+
+# squeezelite-esp32's network_driver_LAN8720.c sets phy_config.phy_addr = 1;
+# the LAN8720A takes its SMI address from PHYAD0 (RXER, pin 10) at reset,
+# internally pulled down, so an open pin is address 0 and IDF's lan87xx
+# driver then never finds the PHY. -1 is IDF's auto-detect.
+SQUEEZELITE_LAN8720_ADDR = 1
+
+
+def phy_addr_problems(esp, lines: list[tuple[str, str]], problem, where: str) -> None:
+    """The SMI address the firmware gives the LAN8720 against the one its
+    PHYAD0 strap sets on the board."""
+    phys = [r for r, v in sorted(esp.parts.items()) if re.match(r"LAN87[12]0", v.upper())]
+    if len(phys) != 1:
+        return
+    fw = next(((w, int(m.group(1))) for w, s in lines for m in [re.search(r"\bphy_addr\s*=\s*(-?\d+)", s)] if m), None)
+    if fw is None:
+        up = next((w for w, s in lines if "squeezelite-esp32" in s), None)
+        if up is None:
+            return
+        fw = (up, SQUEEZELITE_LAN8720_ADDR)
+        how = "squeezelite-esp32's LAN8720 driver hard-codes phy_addr = 1 and no patch changes it"
+    else:
+        how = f"the firmware sets phy_addr = {fw[1]}"
+    if fw[1] < 0:
+        return
+    net = next((n for n, nodes in esp.nets.items() for ref, fn in nodes
+                if ref == phys[0] and "PHYAD0" in pin_names(fn)), None)
+    alone = net is None or net.startswith("unconnected") or len(esp.nets.get(net, [])) < 2
+    strap = 0 if alone else level(esp, net)
+    if strap is None or strap == fw[1]:
+        return
+    problem("ETH-PHYADDR", "board", f"{phys[0]} {esp.parts[phys[0]]}'s PHYAD0 ({'unconnected, internal pull-down' if alone else net}) "
+            f"sets SMI address {strap}, but {how}: the EMAC never finds the PHY and Ethernet stays down "
+            "(phy_addr -1 auto-detects)", fw[0])
+
+
+def ohms(value: str) -> float | None:
+    """A resistor's value: 15k, 4k7, 2.2k, 100R, 1M (a tolerance after it is ignored)."""
+    m = re.match(r"\s*(\d+(?:\.\d+)?)\s*([RKM]?)(\d*)", value.upper())
+    if not m:
+        return None
+    mult = {"": 1, "R": 1, "K": 1e3, "M": 1e6}[m.group(2)]
+    return float(f"{m.group(1)}{'.' + m.group(3) if m.group(3) and '.' not in m.group(1) else ''}") * mult
+
+
+def divider_problems(esp, lines: list[tuple[str, str]], problem, where: str) -> None:
+    """Each #define X_DIVIDER the firmware scales a reading by against the
+    resistors on the board: the ones its comment names (R30/R31), else the
+    pair on the GPIO its ADC_X reads. A divider into the ESP32's ADC alone is
+    the resistors' ratio; one into another part's input can read higher (the
+    input loads the bottom leg) but never lower."""
+    legs: dict[str, list[str]] = {}
+    for net, nodes in esp.nets.items():
+        for ref, _ in nodes:
+            if ref[:1] == "R" and ref[1:2].isdigit():
+                legs.setdefault(ref, []).append(net)
+    adc = {}
+    for w, s in lines:
+        m = re.match(r"\s*#\s*define\s+ADC_(\w+)\s+ADC1_CHANNEL_(\d)\b", s)
+        if m and int(m.group(2)) in ADC1:
+            adc[m.group(1)] = ADC1[int(m.group(2))]
+    for w, s in lines:
+        m = re.match(r"\s*#\s*define\s+(\w+)_DIVIDER\s+\(?\s*(\d+(?:\.\d*)?)f?\s*\)?\s*(.*)$", s)
+        if not m:
+            continue
+        name, have = m.group(1), float(m.group(2))
+        refs = [r for r in dict.fromkeys(re.findall(r"\bR\d+\b", m.group(3))) if len(legs.get(r, [])) == 2]
+        mids = {n for r in refs for n in legs[r]}
+        mids = {n for n in mids if all(n in legs[r] for r in refs)} if len(refs) == 2 else set()
+        if not mids and name in adc:
+            mids = {esp.gpios.get(adc[name])} - {None}
+        if len(mids) != 1:
+            continue
+        mid = mids.pop()
+        on = [r for r, ns in legs.items() if mid in ns]
+        bottom = [r for r in on if any(pins.GROUND.fullmatch(n) for n in legs[r])]
+        top = [r for r in on if r not in bottom]
+        if len(bottom) != 1 or len(top) != 1:
+            continue
+        rt, rb = ohms(esp.parts.get(top[0], "")), ohms(esp.parts.get(bottom[0], ""))
+        if not rt or not rb:
+            continue
+        ratio = (rt + rb) / rb
+        alone = all(ref[:1] in ("R", "C") or ref == esp.ref for ref, _ in esp.nets.get(mid, []))
+        if have < ratio * 0.97 or (alone and have > ratio * 1.03):
+            problem("ADC-DIVIDER", "board", f"{name}_DIVIDER {have:g}, but {top[0]} {esp.parts[top[0]]} over "
+                    f"{bottom[0]} {esp.parts[bottom[0]]} on {mid} divide by {ratio:g}"
+                    + ("" if alone else " (more, loaded, never less)")
+                    + f": every {name.lower()} reading is off by {abs(have / ratio - 1) * 100:.0f} %", w)
 
 
 def board_problems(esp, fw_pins: list[dict], buttons: list, mod: dict, problem, where: str) -> None:
@@ -730,6 +828,9 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         elif not words & {"REG", "ADDR", "ADDRS", "CFG", "PORT", "NUM"} and m.group(2).isdigit() and int(m.group(2)) < 16:
             exp_bits.append({"bit": int(m.group(2)), "name": prefix + m.group(1), "where": w})
     exp_addrs = next((d for d in i2c if d["device"] == prefix.rstrip("_")), None)
+    # the bits the code names past their own #define (None: no code read, so no telling)
+    exp_used = {x["name"] for x in exp_bits for w, s in lines
+                if w != x["where"] and re.search(rf"\b{x['name']}\b", s)} or None
     for d in i2c:
         need("i2c",f"{d['device']} at I2C address {' or '.join(d['addr'])} (set by its address pins)"
              + (f": {d['about']}" if d["about"] else ""), d["where"])
@@ -819,6 +920,9 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
             bd["i2c"] = i2c_parts(esp)
             if target == "esp32" and esp.netlist:
                 board_problems(esp, fw_pins, buttons, mod, problem, str(path))
+                if eth:
+                    phy_addr_problems(esp, lines, problem, str(path))
+                divider_problems(esp, lines, problem, str(path))
             boards.append(bd)
         if files:
             res = pins.check(project, {**cfg, "board": files})
@@ -843,7 +947,7 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                 bd = next((x for x in boards if x.get("file") == str(path)), None)
                 if bd is not None:
                     bd["expander"] = {"ref": e.ref, "part": e.part, "addr": e.addr, "bits": e.bits}
-                for code, text, where in expander_problems(e, exp_bits, exp_addrs, exp_cfg, prefix):
+                for code, text, where in expander_problems(e, exp_bits, exp_addrs, exp_cfg, prefix, exp_used):
                     problem(code, "board", text, where)
 
     return {"format": "fw-constraints/1", "target": target, "idf": fwpins.get("idf"),

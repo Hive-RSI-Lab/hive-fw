@@ -86,7 +86,9 @@
 #define EXP_ENC_SW 12     /* Plus: the knob's push */
 #define EXP_BTN_1 13      /* Plus: source */
 #define EXP_BTN_2 14      /* Plus: next */
-/* P17 is LCD_CS on Ultra's FFC, pulled up; the firmware leaves it an input */
+#define EXP_TAP_SEL 15    /* P17 (TAP_SEL_IO): the ADC's tap/line-in select through Q7 (review-2
+                          * AUDIO-3, DIGITAL-16); left an input, Q7's base pull-down keeps
+                          * the ADC on the RCA line in */
 #define EXP_CFG0 0x00
 #define EXP_CFG1 0xFF
 

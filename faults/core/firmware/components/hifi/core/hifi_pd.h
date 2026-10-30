@@ -55,16 +55,41 @@ float hifi_pd_nominal_v(float vbus_v);
 void hifi_contract_from(bool sink_ok, uint8_t status, uint8_t current_reg,
 			float vbus_v, hifi_contract_t *out);
 
+#define CH224_REG_SRCCAP 0x60
+#define CH224_SRCCAP_LEN 48
+
+/*
+ * The fixed-supply PDOs in the CH224Q's 0x60-0x8F copy of the source's
+ * Source_Capabilities. The datasheet doesn't give the layout, so both readings
+ * are tried: the PD message header (2 bytes, little-endian) then its 32-bit
+ * PDOs, or the PDOs alone. A reading counts only if its first PDO is the
+ * fixed 5 V one every source must list first (USB PD 3.1 6.4.1.2). Fills
+ * v[]/i[] (volts, amps) with up to `max` fixed PDOs and returns how many,
+ * or 0 when neither reading makes sense (the caller then doesn't know).
+ */
+int hifi_pd_srccap_fixed(const uint8_t *raw, int len, float *v, float *i, int max);
+
 /*
  * The core board's CH224Q has no VBUS divider on the ESP32 to read back, so
  * the firmware asks for the voltage itself once a PD contract is in (its
  * resistor already asks for 28 V; the firmware never asks before the PD
  * handshake, so it doesn't renegotiate an attach): 28 V when the source
- * offers EPR (status bit 5), else 20 V. Returns that voltage with *code for
- * CH224_REG_VREQ, or 0 when there is nothing to ask yet.
+ * offers EPR (status bit 5), else the highest fixed PDO up to 20 V the
+ * source lists (fixed_v, n of them: a 30 W phone charger may stop at 15 V),
+ * or 20 V when the list is unknown (n 0). Returns that voltage with *code
+ * for CH224_REG_VREQ, or 0 when there is nothing to ask yet.
  */
-float hifi_ch224_request(uint8_t status, uint8_t *code);
+float hifi_ch224_request(uint8_t status, const float *fixed_v, int n, uint8_t *code);
 
-/* VBUS as the core board takes it: 28 V in an EPR contract (bit 4), 20 V in
- * another PD one (what it asked for), else 5 V. */
-float hifi_ch224_vbus(uint8_t status);
+/* VBUS as the core board takes it: 28 V in an EPR contract (bit 4), the
+ * voltage it asked for (`requested`, 20 V if 0) in another PD one, else 5 V. */
+float hifi_ch224_vbus(uint8_t status, float requested);
+
+/*
+ * Whether the contract is the one to run on. A source that offers EPR
+ * (bit 5) is first in a 20 V SPR contract and steps to 28 V once the CH224Q
+ * enters EPR (bit 4): PVDD must not close before that step, which would
+ * charge the bulk with Q1 on (review-3 R3-POWER-5). It waits for EPR up to
+ * `epr_wait_ms` after the PD contract came in, then takes the SPR one.
+ */
+bool hifi_ch224_settled(uint8_t status, uint32_t ms_since_pd, uint32_t epr_wait_ms);

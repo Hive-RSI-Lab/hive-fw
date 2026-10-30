@@ -2,7 +2,7 @@
 	(version "E")
 	(design
 		(source "/work/boards/core/kicad/core.kicad_sch")
-		(date "2026-10-30T03:40:56")
+		(date "2026-10-30T17:52:15")
 		(tool "Eeschema 10.0.6")
 		(sheet
 			(number "1")
@@ -3211,13 +3211,13 @@
 		)
 		(comp
 			(ref "C64")
-			(value "10uF")
-			(footprint "aiee:C0603")
+			(value "100uF")
+			(footprint "aiee:C1206")
 			(fields
 				(field
-					(name "LCSC") "C19702")
+					(name "LCSC") "C15008")
 				(field
-					(name "Footprint") "aiee:C0603")
+					(name "Footprint") "aiee:C1206")
 				(field
 					(name "Datasheet")
 				)
@@ -3232,7 +3232,7 @@
 			)
 			(property
 				(name "LCSC")
-				(value "C19702")
+				(value "C15008")
 			)
 			(property
 				(name "Sheetname")
@@ -12760,6 +12760,65 @@
 			)
 		)
 		(comp
+			(ref "U21")
+			(value "TLV803S")
+			(footprint "aiee:SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR")
+			(fields
+				(field
+					(name "LCSC") "C132016")
+				(field
+					(name "Footprint") "aiee:SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR")
+				(field
+					(name "Datasheet")
+				)
+				(field
+					(name "Description")
+				)
+			)
+			(libsource
+				(lib "aiee")
+				(part "TLV803SDBZR")
+				(description "")
+			)
+			(property
+				(name "LCSC")
+				(value "C132016")
+			)
+			(property
+				(name "Sheetname")
+				(value "mcu")
+			)
+			(property
+				(name "Sheetfile")
+				(value "mcu.kicad_sch")
+			)
+			(property
+				(name "ki_keywords")
+				(value "Monitors & Reset Circuits")
+			)
+			(sheetpath
+				(names "/mcu/")
+				(tstamps "/afc91452-0b87-4cf9-beea-f62e867051f9/")
+			)
+			(tstamps "fa9ce8f7-6bfe-577f-bd3d-39acd5d06d33")
+			(units
+				(unit
+					(name "A")
+					(pins
+						(pin
+							(num "1")
+						)
+						(pin
+							(num "2")
+						)
+						(pin
+							(num "3")
+						)
+					)
+				)
+			)
+		)
+		(comp
 			(ref "C201")
 			(value "10uF")
 			(footprint "aiee:C0603")
@@ -21956,6 +22015,47 @@
 		)
 		(libpart
 			(lib "aiee")
+			(part "TLV803SDBZR")
+			(docs "https://lcsc.com/product-detail/Microprocessor-Microcontroller-Supervisors_TI_TLV803SDBZR_TLV803SDBZR_C132016.html")
+			(fields
+				(field
+					(name "Reference") "U")
+				(field
+					(name "Value") "TLV803SDBZR")
+				(field
+					(name "Footprint") "aiee:SOT-23-3_L2.9-W1.3-P1.90-LS2.4-BR")
+				(field
+					(name "Datasheet") "https://lcsc.com/product-detail/Microprocessor-Microcontroller-Supervisors_TI_TLV803SDBZR_TLV803SDBZR_C132016.html")
+				(field
+					(name "Description")
+				)
+				(field
+					(name "Manufacturer") "TI(德州仪器)")
+				(field
+					(name "MPN") "TLV803SDBZR")
+				(field
+					(name "LCSC Part") "C132016")
+			)
+			(pins
+				(pin
+					(num "1")
+					(name "GND")
+					(type "power_in")
+				)
+				(pin
+					(num "2")
+					(name "~{RESET}")
+					(type "passive")
+				)
+				(pin
+					(num "3")
+					(name "VDD")
+					(type "power_in")
+				)
+			)
+		)
+		(libpart
+			(lib "aiee")
 			(part "TPA3220DDWR")
 			(docs "https://www.ti.com/lit/ds/symlink/tpa3220.pdf")
 			(fields
@@ -22769,6 +22869,12 @@
 				(pin "24")
 				(pinfunction "VCC_24")
 				(pintype "passive")
+			)
+			(node
+				(ref "U21")
+				(pin "3")
+				(pinfunction "VDD_3")
+				(pintype "power_in")
 			)
 			(node
 				(ref "U3")
@@ -26449,6 +26555,12 @@
 				(pintype "passive")
 			)
 			(node
+				(ref "U21")
+				(pin "2")
+				(pinfunction "~{RESET}_2")
+				(pintype "passive")
+			)
+			(node
 				(ref "U7")
 				(pin "3")
 				(pinfunction "EN_3")
@@ -28246,6 +28358,12 @@
 				(pin "3")
 				(pinfunction "GND_3")
 				(pintype "passive")
+			)
+			(node
+				(ref "U21")
+				(pin "1")
+				(pinfunction "GND_1")
+				(pintype "power_in")
 			)
 			(node
 				(ref "U3")
