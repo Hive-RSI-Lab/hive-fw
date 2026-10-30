@@ -22,5 +22,11 @@ pipeline.
 - **Test**: `bin/fw test`, the unit tests in `tests/`. It needs no
   toolchain and fails when an example's proof is missing or stale.
 - **Score**: `bin/fw score`, higher is better. It is the share of
+<<<<<<< HEAD
   example and target stages (build, host-test, qemu, and pins where the
   firmware names its board) proven by `bin/fw check-all` on current files.
+=======
+  stages (build, host-test, qemu) of every example and target proven by
+  `bin/fw check-all` on their current files; a target's files are those on
+  its project's main branch, and missing ones leave it unproven.
+>>>>>>> 10eee026fe789b6ae663e57749da5c0a3733d430

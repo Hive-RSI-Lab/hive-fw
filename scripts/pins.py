@@ -18,6 +18,8 @@ target (--target, with PROJECT its files, default the target's own dir):
                                                             from PROJECT)
                "sources": ["main/board.h", "patches/*.patch"],
                "nets": {"ACTRLS_TOGGLE": "BTN_PLAY"},     (name -> its net)
+               "when": "HIFI_LITE",     (Kconfig `default ... if COND` lines
+                                         count only when COND names it)
                "ignore": ["PIN_SPARE"]}
 
 A board is a netlist (.net), a schematic (.kicad_sch, exported to a netlist
@@ -262,8 +264,11 @@ def source_lines(project: Path, globs: list[str]):
                 yield f"{p.relative_to(project) if p.is_relative_to(project) else p}:{i}", line
 
 
-def firmware_pins(project: Path, globs: list[str]) -> list[dict]:
-    """[{"gpio", "name", "where"}] read from the sources."""
+def firmware_pins(project: Path, globs: list[str], when: str | None = None) -> list[dict]:
+    """[{"gpio", "name", "where"}] read from the sources. With when (a
+    Kconfig symbol), a line that ends in `if COND` counts only when COND
+    names it, so one Kconfig carrying several boards' defaults gives one
+    board's pins."""
     out = []
 
     def add(g, name, where):
@@ -271,6 +276,9 @@ def firmware_pins(project: Path, globs: list[str]) -> list[dict]:
             out.append({"gpio": g, "name": name, "where": where})
 
     for where, line in source_lines(project, globs):
+        cond = re.search(r"\sif\s+([^\"]+?)\s*$", line)
+        if when and cond and not re.search(rf"\b{re.escape(when)}\b", cond.group(1)):
+            continue
         m = re.match(r"\s*#\s*define\s+(\w+)\s+\(?\s*(?:GPIO_NUM_)?(\d+)\s*\)?\s*(?:/[/*].*)?$", line)
         if m and (set(m.group(1).upper().split("_")) & ({"PIN", "GPIO", "IO"} | SIGNALS)):
             add(int(m.group(2)), m.group(1), where)
@@ -331,7 +339,7 @@ def check(project: Path, cfg: dict) -> dict:
     if not boards:
         res["error"] = "no board: pinmap.board names none"
         return res
-    pins = firmware_pins(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"])
+    pins = firmware_pins(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"], cfg.get("when"))
     ignore = set(cfg.get("ignore") or [])
     pins = [p for p in pins if p["name"] not in ignore]
     if not pins:

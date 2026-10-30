@@ -52,7 +52,7 @@ def python_for(idf: str) -> str:
     """The python minor version an IDF release's own venv is built with.
     IDF 4.x gets 3.10: the last with wheels for the packages its projects pin
     (squeezelite-esp32's cspot needs grpcio-tools 1.48, cp310 at newest); 5.x and 6.x take 3.12."""
-    major = int(check_version(idf)[1:].split(".")[0])
+    major = idf_major(idf)
     return "3.10" if major < 5 else "3.12"
 
 
@@ -103,7 +103,8 @@ def read_pins(project: Path) -> dict:
          "prepare": "tools/fetch.sh {src}", "src": "{project}/.fw-src",
          "python": ["setuptools<70"],
          "qemu": {"expect": "regex", "timeout": 30, "psram": "4M", "flash": "8MB",
-                  "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y"]}}
+                  "sdkconfig": ["CONFIG_ESP32_REV_MIN_0=y"], "eth": "emac",
+                  "http": [{"get": "/api/v1/info", "expect": "regex"}]}}
     "prepare" is for firmware that is an overlay on an upstream tree (the
     receiver's is squeezelite-esp32 plus a patch): fw build runs it in the
     project dir to make the IDF project at "src", then builds there.
@@ -137,10 +138,53 @@ def expand(s: str, project: Path, src: Path | None = None) -> str:
             .replace("{src}", str(src) if src else "{src}"))
 
 
+def qemu_variant(pins: dict) -> bool:
+    """Whether the QEMU boot needs a build of its own: config lines only
+    QEMU wants (a chip-revision floor QEMU meets, say), or a shim."""
+    q = pins.get("qemu", {})
+    return bool(q.get("sdkconfig") or q.get("eth") or "adc1" in q or q.get("wifi"))
+
+
+def adc1_raw(spec) -> list[int]:
+    """fw.json qemu.adc1 as eight raw readings (channels 0-7): one number
+    for all, or {"channel": raw}, the rest 0."""
+    if isinstance(spec, bool) or not isinstance(spec, (int, dict)):
+        raise ValueError(f"qemu.adc1: a raw value or {{\"channel\": raw}}, not {spec!r}")
+    vals = [spec] * 8 if isinstance(spec, int) else [0] * 8
+    for ch, v in (spec.items() if isinstance(spec, dict) else []):
+        if not (str(ch).isdigit() and int(ch) < 8) or isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"qemu.adc1: channel {ch!r} -> {v!r}: want 0-7 -> a raw value")
+        vals[int(ch)] = v
+    if any(not 0 <= v <= 4095 for v in vals):
+        raise ValueError("qemu.adc1: raw values are 0-4095 (12 bits)")
+    return vals
+
+
 def qemu_build_dir(src: Path, pins: dict) -> Path:
-    """A firmware whose QEMU boot needs config of its own (a chip-revision
-    floor QEMU meets, say) gets a second build there; else the build itself."""
-    return src / "build-qemu" if pins.get("qemu", {}).get("sdkconfig") else src / "build"
+    """build-qemu/ for a firmware with a QEMU variant; else the build itself."""
+    return src / "build-qemu" if qemu_variant(pins) else src / "build"
+
+
+# QEMU-only shims (qemu/*.c), linked into build-qemu/ with -Wl,--wrap so the
+# firmware's own code runs unchanged:
+#   "eth": "emac": the ESP32 EMAC constructors, so firmware that drives an
+#     RMII PHY gets QEMU's open_eth (OpenCores MAC, DP83848-like PHY);
+#   "adc1": a raw value, or {"6": raw, ...} per channel: adc1_get_raw, which
+#     never returns in QEMU (no SAR ADC);
+#   "wifi": "off": esp_wifi_start and the calls after it, which panic in
+#     QEMU (no radio), succeed and find no network.
+SHIMS = Path(__file__).resolve().parent.parent / "qemu"
+OPENETH_SHIM = SHIMS / "openeth.c"
+ADC_SHIM = SHIMS / "adc.c"
+NOWIFI_SHIM = SHIMS / "nowifi.c"
+NOWIFI_WRAPS = [f"esp_wifi_{f}" for f in ("start", "stop", "connect", "disconnect", "scan_start", "scan_stop")]
+OPENETH_WRAPS = ["esp_eth_mac_new_esp32"] + [f"esp_eth_phy_new_{p}" for p in
+                                             ("lan87xx", "ip101", "rtl8201", "ksz8041", "ksz8081", "ksz80xx")]
+OPENETH_SDKCONFIG = ["CONFIG_ETH_USE_OPENETH=y"]
+
+
+def idf_major(idf: str) -> int:
+    return int(check_version(idf)[1:].split(".")[0])
 
 
 def detect_idf(project: Path) -> str | None:

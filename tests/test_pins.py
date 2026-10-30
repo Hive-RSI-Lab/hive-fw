@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +70,14 @@ class Firmware(Fixture):
                                (27, "bck"), (33, "sda"), (32, "scl"), (0, "mck"),
                                (13, "ACTRLS_VOLUP"), (36, "ACTRLS_VOLDOWN"), (14, "ir")})
         # not I2C_PORT, ES8388_ADDR, i2c=16 (an address), or SQUEEZEAMP's context line
+
+    def test_when_keeps_one_boards_kconfig_defaults(self):
+        (self.fw / "hooks.patch").write_text(PATCH + '+\t\t\tdefault "model=I2S,bck=2,ws=4" if HIFI_PLUS || HIFI_ULTRA\n')
+        names = lambda when: {(p["gpio"], p["name"]) for p in pins.firmware_pins(self.fw, ["*.patch"], when)}
+        self.assertIn((2, "bck"), names(None))
+        self.assertNotIn((2, "bck"), names("HIFI_LITE"))
+        self.assertIn((27, "bck"), names("HIFI_LITE"))
+        self.assertIn((2, "bck"), names("HIFI_PLUS"))
 
 
 class Board(Fixture):
@@ -169,17 +178,26 @@ class Scored(Fixture):
     def tearDown(self):
         self.env.stop()
 
-    def test_pins_stage_counts_while_the_board_is_unchanged(self):
+    def commit(self, msg):
+        for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-qm", msg]):
+            if args[0] == "init" and (self.d / ".git").exists():
+                continue
+            subprocess.run(["git", "-C", str(self.d), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                           check=True, capture_output=True)
+
+    def test_pins_stage_counts_while_mains_board_is_unchanged(self):
+        self.commit("x")
         pm = score.pinmap(self.root, "lite", self.fw)
         rec = {"inputs": score.inputs_hash(self.fw), "board": score.board_hash(self.fw, pm),
                "stages": {"build": "pass", "host-test": "pass", "qemu": "pass", "pins": "pass"}}
         (self.root / "proof" / "lite.json").write_text(json.dumps(rec))
         self.assertEqual(score.score(self.root, io.StringIO()), 100.0)
         (self.d / "board.net").write_text(netlist() + " ")
+        self.assertEqual(score.score(self.root, io.StringIO()), 100.0)  # not on main yet
+        self.commit("board")
         out = io.StringIO()
         self.assertEqual(score.score(self.root, out), 75.0)
         self.assertIn("board changed", out.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()
