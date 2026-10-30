@@ -13,13 +13,14 @@
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw ports                  the serial ports this sandbox can see
 #   fw bootlog LOG            judge a saved boot log
-#   fw lint [DIR]             what the firmware gets wrong about the chip and
-#                             board, from its files and the board's netlist
 #   fw constraints [PROJECT] [--target T] [--board F] [--json]
-#                             what the firmware needs from the board (hwde reads it)
+#                             fw's one checker: what the firmware needs from the
+#                             board, and what it or the board gets wrong (CODE:
+#                             problem lines; hwde reads it; fw score scores it)
+#   fw pins [PROJECT] [--board F]   just its pin map against the board's netlist
 #   fw test                   this module's own tests (the per-change test)
 #   fw check-all              build, host-test and boot every firmware (slow)
-#   fw score                  planted firmware faults the checks catch (the score)
+#   fw score                  planted firmware faults fw constraints catches (the score)
 #
 # PROJECT defaults to the current directory; its fw.json pins the IDF
 # version and target (docs/README.md). Toolchains live in /hive/tools/fw
@@ -37,9 +38,9 @@ env | idf | build | flash | monitor | ports | doctor) exec "$py" "$s/fwidf.py" "
 host-test) exec "$py" "$s/hosttest.py" "$@" ;;
 qemu) exec "$py" "$s/qemu.py" "$@" ;;
 bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
-lint) exec "$py" "$s/lint.py" "$@" ;;
 check-all) exec "$py" "$s/check_all.py" "$@" ;;
 constraints) exec "$py" "$s/constraints.py" "$@" ;;
+pins) exec "$py" "$s/pins.py" "$@" ;;
 score) exec "$py" "$s/score.py" "$@" ;;
 test)
 	cd "$here"

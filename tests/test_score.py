@@ -9,13 +9,13 @@ import score
 
 
 class Score(unittest.TestCase):
-    """A one-file corpus: lint reads a partition table."""
+    """A one-file corpus: the checker reads a partition table."""
 
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.b = self.root / "faults" / "x"
         self.b.mkdir(parents=True)
-        (self.b / "lint.json").write_text(json.dumps({"partitions": "p.csv"}))
+        (self.b / "fw.json").write_text(json.dumps({"constraints": {"partitions": "p.csv"}}))
         (self.b / "p.csv").write_text("nvs, data, nvs, 0x9000, 0x6000,\nfactory, app, factory, 0x10000, 0x100000,\n")
 
     def faults(self, *fs):

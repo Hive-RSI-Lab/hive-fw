@@ -84,7 +84,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
-| `fw lint [DIR] [--spec F]` | Reads the firmware's pins (C headers, squeezelite Kconfig defaults), sdkconfig, partition table and the board's KiCad netlist, as `DIR/lint.json` points, and reports what's wrong without a build: a pin whose board net doesn't carry its name or is open (PIN-NET), one GPIO with two jobs (PIN-SHARED), the flash or PSRAM pins (PIN-FLASH), an output on GPIO34-39 (PIN-INPUT), GPIO12 (STRAP-12), ADC2 with Wi-Fi (ADC2-WIFI), and partitions that overlap, run past the flash, are misaligned, lack otadata, or hold an image bigger than the slot (PART-*). Board nets no firmware pin names are notes. Exit 1 on an error. |
+| `fw pins [P] [--board F]` | Just the pin map against the board's KiCad netlist (`.net`, `.kicad_sch`, `.kicad_pcb`): the part of `fw constraints` hwde's side runs alone. |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
 (`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
@@ -164,8 +164,9 @@ to see where. That's how the ADC wait was found.
 
 ## What the firmware needs from the board
 
-`fw constraints` puts everything the firmware takes for granted about the
-hardware into one report, so the board is designed against it instead of
+`fw constraints` is fw's one checker. It puts everything the firmware takes
+for granted about the hardware into one report, and every rule the firmware
+or the board breaks in it as a coded problem, so the board is designed against it instead of
 discovering it at bring-up. Each line says where in the firmware it comes
 from. It reads files only, needs no IDF and takes about a second, so the
 board side can run it on every change:
@@ -181,16 +182,22 @@ What it reads, and the needs it turns that into:
   Bluetooth, which mean an antenna keep-out and a 3.3 V supply that gives
   500 mA or more for transmit peaks; the brown-out threshold the rail has
   to stay above.
-- **The partition table**: where it ends, against the flash size. With a
-  build (`--build`, or the project's own `build/`), it also checks the app
+- **The partition table**: where it ends, against the flash size;
+  partitions that overlap each other or the table (PART-OVERLAP), aren't
+  aligned (PART-ALIGN, apps on 64 KB), share a name or leave no app
+  (PART-BAD), or OTA slots without otadata (PART-OTA). `images` (a JSON of
+  partition -> bytes a build put there) checks each image against its own
+  slot (PART-IMAGE). With a build (`--build`, or the project's own `build/`), it also checks the app
   image against its partitions (the OTA slots, or else the factory one) and
   gives DRAM, IRAM, flash and PSRAM use from the ELF.
 - **The sources**: the GPIOs the firmware drives (read by `fw pins`'s
   reader), each against the ESP32's rules: the flash pins (6-11) and a
   WROVER's PSRAM pins (16/17) are taken; 34-39 are input only, with no
   pull-ups inside; strapping levels at reset (GPIO0 high, GPIO2 low or
-  floating, GPIO12 low for 3.3 V flash); ADC2 reads nothing while Wi-Fi is
-  on. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
+  floating, GPIO12 low for 3.3 V flash);
+  ADC2 reads nothing while Wi-Fi is on (ADC2-WIFI); one GPIO given two
+  unrelated jobs is PIN-SHARED. PSRAM off while other settings put data in
+  it (Bluetooth's buffers, malloc) is SPIRAM-OFF. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
   internal EMAC's fixed pins (19, 21, 22, 25, 26, 27, and the clock on
   0/16/17) on the list. The report also lists the I2C addresses the firmware
   talks to (`#define X_ADDR 0x48`: the board's address straps have to match)
@@ -199,10 +206,17 @@ What it reads, and the needs it turns that into:
 - **The board**, when one is named (`--board`, or the config's `board`): the
   ESP32 part's name against the module needs (ESP32-WROVER-E-N8R8 means
   8 MB of flash, 8 MB of PSRAM, a v3 chip), and the pin map against its nets
-  (`fw pins`'s check).
+  (`fw pins`'s check, PIN-NET), and the board's pull resistors on the
+  straps (from a `.net`): one that holds GPIO0 low, or GPIO2 or GPIO12 high,
+  at reset is STRAP-0/2/12. A strap the firmware uses with no such resistor
+  stays a need, not a problem: the hifi core board's IO12 drives a PCM5102A
+  DIN, high-Z at boot, and is fine.
 
 Each finding is either a **need** (something the board must provide) or a
-**problem** (something the firmware or the board breaks). The command exits
+**problem** (something the firmware or the board breaks), printed as
+`PROBLEM CODE: what` (in the JSON, `code`; the codes: PIN-NET, PIN-SHARED,
+PIN-FLASH, PIN-INPUT, PIN-RMII, STRAP-0/2/12, ADC2-WIFI, SPIRAM-OFF, PART-*,
+BOARD-*). The command exits
 0 with no problems, 1 with one, and 2 when there was nothing to read. Where
 to look is set by `constraints` in fw.json or in a target's pins;
 `pinmap`'s keys fill in what it leaves out:
@@ -212,11 +226,8 @@ to look is set by `constraints` in fw.json or in a target's pins;
                     "sources": ["components/hifi/esp/hifi_board_core.h", "patches/*.patch"],
                     "when": "HIFI_PLUS",            (Kconfig `default ... if X` lines for this board only)
                     "board": "../boards/core/kicad/core.net",
-                    "ignore": ["EXP_LED"]}          (names that aren't GPIOs: an expander's bit)
-
-The pins and board sections need `scripts/pins.py` (fw pins). An fw
-without it still reports the module, flash, memory, Ethernet and I2C needs,
-and says the pins weren't read.
+                    "ignore": ["EXP_LED"],          (names that aren't GPIOs: an expander's bit)
+                    "images": "sizes.json"}         (optional: image bytes per partition)
 
 ## Boards
 
@@ -260,21 +271,22 @@ work on.
 - **Score**, `bin/fw score`, higher is better: planted firmware faults fw's
   checks catch, minus false alarms. The corpus is [faults/](../faults/): a
   copy of a real firmware and its board (`faults/lite/`: the receiver's Lite
-  firmware and lite-main's netlist) with a `lint.json`, and `faults.json`,
+  firmware and lite-main's netlist) with a `fw.json` for `fw constraints`, and `faults.json`,
   the faults planted on it (find/replace edits: a wrong GPIO, a strap pin,
   ADC2 with Wi-Fi, a partition past the flash, an image over its slot...).
-  A fault is caught when `fw lint` reports an error with it planted that it
-  doesn't on the clean base; every error on a clean base costs a point.
+  Each fault is planted in a scratch copy of the base (in /dev/shm), and it
+  is caught when `fw constraints` reports a problem with it planted that it
+  doesn't on the clean base; every problem on a clean base costs a point.
   Each fault names its kind (`expect`) and `site`; a second fault of the
   same kind at the same site is a near-duplicate and counts nothing. It
-  reads only this module's files, in a fraction of a second. It has no top:
+  reads only this module's files, in about a second. It has no top:
   to raise it,
   - make a check catch a fault it misses (`fw score` prints each);
   - add a fault kind real firmware gets wrong, with the check that catches
     it (a fault its check can't catch yet is fine too: it shows what to
     build next);
   - add a base: another board's firmware (the core board's Plus and Ultra),
-    with its own clean files, which must lint clean.
+    with its own clean files, on which `fw constraints` must find no problem.
   The test holds the corpus: every fault plants, no base raises an error,
   and a caught fault is caught by the check it names in `expect`.
 

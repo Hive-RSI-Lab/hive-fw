@@ -1,0 +1,11 @@
+{
+  "constraints": {
+    "sdkconfig": "firmware/board/lite-main/sdkconfig.defaults",
+    "partitions": "firmware/board/lite-main/partitions.csv",
+    "images": "sizes.json",
+    "sources": ["firmware/components/**/*.h", "firmware/components/**/*.c", "firmware/patches/*.patch"],
+    "when": "HIFI_LITE",
+    "board": "boards/lite-main/kicad/lite-main.net",
+    "ref": "U5"
+  }
+}

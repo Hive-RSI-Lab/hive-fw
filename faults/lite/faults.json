@@ -83,7 +83,7 @@
    "id": "amp-sdz-on-strap12",
    "expect": "STRAP-12",
    "site": "PIN_AMP_SDZ",
-   "about": "the amp's shutdown moved to GPIO12 on board and firmware alike: a strap pin",
+   "about": "the amp's shutdown moved to GPIO12 on board and firmware alike, its pull resistor R52 turned into a pull-up: GPIO12 high at reset selects 1.8 V flash",
    "edits": [
     {
      "file": "firmware/components/hifi/esp/hifi_board_lite.h",
@@ -104,6 +104,34 @@
      "file": "boards/lite-main/kicad/lite-main.net",
      "find": "\"SWAP\"",
      "replace": "\"IO12_14\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R52\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R52\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "mclk-pulled-down-strap0",
+   "expect": "STRAP-0",
+   "site": "GPIO0 pull (R21)",
+   "about": "the board's I2S_MCLK resistor R21 (on GPIO0) to ground instead of 3.3 V: GPIO0 low at reset enters download mode and the firmware never runs",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R21\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(name \"GND\")\n\t\t\t(class \"Default\")\n",
+     "replace": "\t\t\t(name \"GND\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"R21\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
     }
    ]
   },

@@ -25,7 +25,8 @@ CONFIG_ESP32_BROWNOUT_DET=y
 CONFIG_ESP32_BROWNOUT_DET_LVL=0
 """
 PARTS = """# Name, Type, SubType, Offset, Size
-nvs,      data, nvs,     0x9000,  0x6000,
+nvs,      data, nvs,     0x9000,  0x4000,
+otadata,  data, ota,     ,        0x2000,
 phy_init, data, phy,     ,        0x1000,
 factory,  app,  factory, ,        1M,
 ota_0,    app,  ota_0,   ,        0x100000,
@@ -161,11 +162,10 @@ class Constraints(unittest.TestCase):
             rc = constraints.main([str(self.p), "--out", str(out), "--build", str(self.p / "none")])
         self.assertEqual(rc, 1)  # the ADC2 problem
         self.assertIn("needs from the board:", so.getvalue())
-        self.assertIn("PROBLEM pins: ADC2", so.getvalue())
+        self.assertIn("PROBLEM ADC2-WIFI: ADC2", so.getvalue())
         self.assertEqual(json.loads(out.read_text())["format"], "fw-constraints/1")
 
 
-@unittest.skipIf(constraints.pins is None, "fw pins (scripts/pins.py) isn't here")
 class WithPins(unittest.TestCase):
     NET = """(export (version "E")
   (components
@@ -200,6 +200,60 @@ class WithPins(unittest.TestCase):
         self.assertIn("has 2 MB of flash", text)
         self.assertIn("has no PSRAM", text)
         self.assertEqual(res["boards"][0]["part"], "ESP32-WROOM-32E-N2")
+
+    def test_shared_gpio(self):
+        (self.p / "board.h").write_text("#define PIN_AMP_EN 19\n#define PIN_LED 19\n")
+        res = self.run_report("ESP32-WROVER-E-N8R8")
+        self.assertIn("PIN-SHARED", {x["code"] for x in res["problems"]})
+
+    def test_a_strap_the_board_pulls_the_wrong_way(self):
+        net = self.NET.replace('(name "/I2S_BCK")', '(name "/I2S_BCK") (node (ref "R1") (pin "1"))') \
+            .replace(')))\n', ')\n    (net (code "4") (name "+3V3") (node (ref "R1") (pin "2")))))\n')
+        (self.p / "b.net").write_text(net.format(part="ESP32-WROVER-E-N8R8"))
+        res = constraints.build_report(self.p, {"target": "esp32"},
+                                       {"sources": ["*.h"], "board": "b.net", "nets": {"PIN_LED": "SENSE"}})
+        self.assertEqual([x["problem"] for x in res["problems"] if x["code"] == "STRAP-2"],
+                         ["R1 pulls GPIO2 (I2S_BCK) up: " + constraints.STRAPS[2]])
+        self.assertNotIn("STRAP-2", {x["code"] for x in self.run_report("ESP32-WROVER-E-N8R8")["problems"]})
+
+
+class Partitions(unittest.TestCase):
+    """The table rules fw lint (task 261030-030425) had, now the checker's."""
+    T = "# n, t, s, o, size\nnvs, data, nvs, 0x9000, 0x4000,\notadata, data, ota, , 0x2000,\n" \
+        "ota_0, app, ota_0, 0x10000, 1M,\nota_1, app, ota_1, , 1M,\n"
+
+    def codes(self, csv, flash="4MB", images=None):
+        p = Path(tempfile.mkdtemp())
+        (p / "sdkconfig").write_text(f'CONFIG_ESPTOOLPY_FLASHSIZE="{flash}"\n')
+        (p / "p.csv").write_text(csv)
+        cfg = {"partitions": "p.csv", "sources": []}
+        if images is not None:
+            (p / "sizes.json").write_text(json.dumps(images))
+            cfg["images"] = "sizes.json"
+        res = constraints.build_report(p, {"target": "esp32"}, cfg, None)
+        return sorted({x["code"] for x in res["problems"]})
+
+    def test_a_good_table(self):
+        self.assertEqual(self.codes(self.T), [])
+        self.assertEqual(self.codes(self.T, images={"ota_0": 900000}), [])
+
+    def test_each_rule(self):
+        self.assertEqual(self.codes(self.T, "2MB"), ["PART-FLASH"])
+        self.assertEqual(self.codes(self.T, images={"ota_0": 0x100001}), ["PART-IMAGE"])
+        self.assertEqual(self.codes(self.T, images={"ota_9": 1}), ["PART-IMAGE"])
+        self.assertEqual(self.codes(self.T.replace("0x9000", "0x8000")), ["PART-OVERLAP"])
+        self.assertIn("PART-ALIGN", self.codes(self.T.replace("0x10000", "0x11000")))
+        self.assertEqual(self.codes(self.T.replace("otadata, data, ota, , 0x2000,\n", "")), ["PART-OTA"])
+        self.assertIn("PART-OVERLAP", self.codes(self.T.replace("0x4000", "0x8000")))
+        self.assertIn("PART-BAD", self.codes(self.T + "nvs, data, nvs, , 0x1000,\n"))
+
+    def test_psram_off_while_settings_use_it(self):
+        p = Path(tempfile.mkdtemp())
+        (p / "sdkconfig").write_text("# CONFIG_ESP32_SPIRAM_SUPPORT is not set\nCONFIG_SPIRAM=y\n"
+                                     "CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y\n")
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": []}, None)
+        self.assertEqual([x["code"] for x in res["problems"]], ["SPIRAM-OFF"])
+        self.assertFalse(res["module"]["psram"])
 
 
 if __name__ == "__main__":
