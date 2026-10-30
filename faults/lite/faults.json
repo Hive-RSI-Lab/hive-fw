@@ -537,6 +537,101 @@
      "replace": "#define LINE_DIVIDER 2.0f"
     }
    ]
+  },
+  {
+   "id": "ir-on-gpio2",
+   "expect": "STRAP-2",
+   "site": "IR_IN / GPIO2",
+   "about": "The IR receiver output (idle high, R63 10k pull-up) is moved from GPIO14 to GPIO2: with GPIO0 low, GPIO2 must be low or floating to enter the serial bootloader, so flashing over the CH340 auto-reset no longer works.",
+   "blind": "ESP32 Datasheet, Section 2.4 Strapping Pins (Table: Booting Mode, Download Boot requires GPIO0=0 and GPIO2=0); ESP-IDF Programming Guide / esptool docs, Boot Mode Selection",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R63\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"U5\")\n\t\t\t\t(pin \"13\")\n\t\t\t\t(pinfunction \"IO14_13\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"R63\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"U5\")\n\t\t\t\t(pin \"24\")\n\t\t\t\t(pinfunction \"IO2_24\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "(name \"unconnected-(U5-IO2-Pad24)\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U5\")\n\t\t\t\t(pin \"24\")\n\t\t\t\t(pinfunction \"IO2_24\")\n\t\t\t\t(pintype \"passive+no_connect\")\n\t\t\t)",
+     "replace": "(name \"unconnected-(U5-IO14-Pad13)\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U5\")\n\t\t\t\t(pin \"13\")\n\t\t\t\t(pinfunction \"IO14_13\")\n\t\t\t\t(pintype \"passive+no_connect\")\n\t\t\t)"
+    },
+    {
+     "file": "firmware/patches/0001-hifi-receiver-hooks.patch",
+     "find": "default \"14=ir:nec,22=green:1\" if HIFI_LITE",
+     "replace": "default \"2=ir:nec,22=green:1\" if HIFI_LITE"
+    }
+   ]
+  },
+  {
+   "id": "en-rc-too-short",
+   "expect": "POWER-EN",
+   "site": "ESP_EN / C22",
+   "about": "The EN delay capacitor C22 is changed from 1uF to 100pF: with R20 10k the RC is about 1 us, so EN rises before the 3V3 rail has settled and the chip can fail to start or latch up at power-on.",
+   "blind": "ESP32 Hardware Design Guidelines, Section Schematic Checklist > Power-on Sequence and System Reset / Chip Enable (recommended R=10k, C=1uF on CHIP_PU); ESP32 Datasheet, Section 2.5.3 Power Scheme / Power-up timing (CHIP_PU must go high after VDD is stable, t0 >= 50 us)",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "(ref \"C22\")\n\t\t\t(value \"1uF\")",
+     "replace": "(ref \"C22\")\n\t\t\t(value \"100pF\")"
+    }
+   ]
+  },
+  {
+   "id": "autoreset-collectors-swapped",
+   "expect": "AUTO-RESET",
+   "site": "Q2/Q3 collectors (ESP_EN / GPIO0)",
+   "about": "The auto-reset transistors' collectors are swapped (Q2 now on GPIO0, Q3 on EN): RTS then drives GPIO0 and DTR drives EN, the opposite of what esptool's reset sequence expects, so the board neither resets into download mode nor boots normally when a serial monitor toggles DTR/RTS.",
+   "blind": "ESP32-DevKitC V4 schematic / ESP32 Hardware Design Guidelines, Section UART (auto-download circuit: DTR->base of the EN transistor with emitter on RTS, RTS->base of the IO0 transistor with emitter on DTR); esptool docs, Boot Mode Selection > Automatic Bootloader",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"C22\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"Q2\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"C22\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"Q3\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(name \"/I2S_MCLK\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"Q3\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)",
+     "replace": "\t\t\t(name \"/I2S_MCLK\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"Q2\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)"
+    }
+   ]
+  },
+  {
+   "id": "i2c-scl-pullup-to-5v",
+   "expect": "I2C-PULLUP",
+   "site": "I2C_SCL pull-up R22",
+   "about": "The SCL pull-up R22 is moved from +3V3 to +5V: GPIO32 and the ES8388 are pulled to 5 V, above the ESP32's 3.6 V absolute maximum on any IO (pins are not 5 V tolerant), damaging the pad over time.",
+   "blind": "ESP32 Datasheet, Section 5.1 Absolute Maximum Ratings (VDD and IO max 3.6 V) and Section 5.2 Recommended Operating Conditions; ESP32 Hardware Design Guidelines, GPIO (ESP32 GPIOs are not 5 V tolerant)",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R21\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"R22\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"R21\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "(name \"+5V\")\n\t\t\t(class \"Pwr_0p4mm\")\n",
+     "replace": "(name \"+5V\")\n\t\t\t(class \"Pwr_0p4mm\")\n\t\t\t(node\n\t\t\t\t(ref \"R22\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "coredump-flash-no-partition",
+   "expect": "COREDUMP-PART",
+   "site": "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH",
+   "about": "Core dump is switched to flash but the partition table has no data/coredump partition: on a crash the core dump cannot be saved (\"No core dump partition found\") and the field diagnostics silently never appear.",
+   "blind": "ESP-IDF Programming Guide, API Guides > Core Dump, \"Save core dump to flash\" (requires a partition of type data, subtype coredump in the partition table); Partition Tables, SubType coredump",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y",
+     "replace": "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_ENABLE_COREDUMP_TO_NONE=y",
+     "replace": "CONFIG_ESP32_ENABLE_COREDUMP_TO_FLASH=y"
+    }
+   ]
   }
  ]
 }
