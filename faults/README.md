@@ -12,6 +12,18 @@ site. A second fault of the same kind at the same site is a near-duplicate:
 `fw score` prints it as DUPLICATE and counts nothing for it, and the test
 fails on it, so restating a fault can't raise the score.
 
+A fault with `blind` was written by someone who hadn't read fw's checker,
+its tests or the other faults, from the base's files and Espressif's
+documents alone (`blind` names the document and section that says it's a
+mistake; its `expect` is the author's name for the rule). The rest were
+written beside the check that catches them, so they never show a miss;
+blind ones do. `fw score` prints the blind faults it misses last, as the to-do
+list: each is a check fw doesn't have yet and a point when it lands (a miss
+costs nothing). When a check lands, give it the fault's `expect` as its code,
+or set `expect` to the code that catches it. A new batch of blind faults is
+best written by an agent told not to read `scripts/`, `tests/`, `docs/`
+or any `faults.json`; drop any that restate a fault the base already has.
+
 - `lite/`: the hifi receiver's Lite firmware (hifi-receiver-2 main a7f32da:
   `firmware/` files the checks read, and `boards/lite-main/kicad/lite-main.net`).
   `sizes.json` holds its images' sizes from the 2026-10-28 build that

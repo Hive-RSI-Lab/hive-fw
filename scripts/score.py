@@ -16,6 +16,11 @@ alarms (problems on a clean base),
 higher is better and unbounded: a new kind of fault, a new check, or a new
 base raises it. It reads the corpus only, nothing outside this module, so it
 reads the same in any sandbox. Prints one line per fault, then the number.
+
+A fault with "blind" (the Espressif document and section that says it's a
+mistake) was written by someone who hadn't read the checker, so it shows
+what the checker misses. Its misses are printed last as the to-do list: the
+checks fw doesn't have yet, each a point when it lands. A miss costs nothing.
 """
 from __future__ import annotations
 
@@ -65,6 +70,7 @@ def run(root: Path = ROOT, out=sys.stdout) -> dict:
     """{"caught": n, "faults": n, "false_alarms": n, "results": [...]}."""
     caught = total = alarms = 0
     results = []
+    todo = []
     for b in bases(root):
         work = Path(tempfile.mkdtemp(prefix=f"fw-score-{b.name}-", dir=SCRATCH))
         try:
@@ -92,7 +98,10 @@ def run(root: Path = ROOT, out=sys.stdout) -> dict:
                 caught += hit
                 by = sorted({x.split(":", 1)[0] for x in new})
                 results.append({"base": b.name, "id": fault["id"], "caught": hit, "by": by, "broken": why,
-                                "duplicate": False})
+                                "duplicate": False, "blind": bool(fault.get("blind"))})
+                if fault.get("blind") and not hit and not why:
+                    todo.append(f"  {b.name}/{fault['id']} ({fault.get('expect', '?')} at {fault.get('site', '?')}): "
+                                f"{fault.get('about', '')} [{fault['blind']}]")
                 line = f"caught by {', '.join(by)}" if hit else f"BROKEN: {why}" if why else \
                     f"missed (meant for {fault.get('expect', '?')})"
                 print(f"{b.name}/{fault['id']}: {line}", file=out)
@@ -100,8 +109,14 @@ def run(root: Path = ROOT, out=sys.stdout) -> dict:
             shutil.rmtree(work, ignore_errors=True)
     if not total:
         raise SystemExit("fw score: no faults under faults/*/faults.json")
-    print(f"{caught}/{total} faults caught, {alarms} false alarm(s)", file=out)
-    return {"caught": caught, "faults": total, "false_alarms": alarms, "results": results}
+    blind = [x for x in results if x.get("blind")]
+    if todo:
+        print(f"to do: {len(todo)} blind fault(s) missed, each a check fw doesn't have yet:", file=out)
+        for t in todo:
+            print(t, file=out)
+    print(f"{caught}/{total} faults caught ({sum(x['caught'] for x in blind)}/{len(blind)} blind), "
+          f"{alarms} false alarm(s)", file=out)
+    return {"caught": caught, "faults": total, "false_alarms": alarms, "results": results, "todo": todo}
 
 
 def score(root: Path = ROOT, out=sys.stdout) -> int:

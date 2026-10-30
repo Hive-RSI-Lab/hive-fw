@@ -440,6 +440,149 @@
      "replace": "#define EXP_CFG1 0xFC"
     }
    ]
+  },
+  {
+   "id": "eth-osc-runs-at-reset-on-gpio0",
+   "expect": "STRAP-0",
+   "site": "GPIO0 / ETH_CLK (Y2 OE)",
+   "about": "The 50 MHz oscillator's OE is tied to +3V3 instead of the expander's PHY_RST, so the clock toggles GPIO0 while the strapping pins are sampled at reset and the chip randomly enters download mode or fails to boot.",
+   "blind": "ESP-IDF Programming Guide, Ethernet (ESP32), 'RMII clock' / CONFIG_ETH_RMII_CLK_IN_GPIO: GPIO0 is a strapping pin, the external clock on it must be disabled until boot; ESP32 datasheet, 'Strapping Pins' table (GPIO0 sampled at reset)",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"Y2\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pinfunction \"Tri-state_1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"Y2\")\n\t\t\t\t(pin \"4\")\n\t\t\t\t(pinfunction \"VDD_4\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"Y2\")\n\t\t\t\t(pin \"4\")\n\t\t\t\t(pinfunction \"VDD_4\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"Y2\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pinfunction \"Tri-state_1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "rmii-clk-output-on-psram-gpio17",
+   "expect": "RMII-CLK",
+   "site": "CONFIG_ETH_RMII_CLK_* vs the board's external 50 MHz on GPIO0",
+   "about": "sdkconfig switches the EMAC to generate the RMII clock out on GPIO17, but the board feeds an external oscillator to GPIO0 and the LAN8720, and GPIO17 is the WROVER's PSRAM clock, so PSRAM breaks and the MAC runs on a clock unrelated to the PHY's.",
+   "blind": "ESP-IDF Programming Guide, Ethernet, 'RMII clock' (CONFIG_ETH_RMII_CLK_INPUT on GPIO0 vs CONFIG_ETH_RMII_CLK_OUTPUT on GPIO0/16/17) and note that GPIO16/17 are taken by PSRAM on WROVER modules; ESP32-WROVER-E datasheet, pin description (GPIO16/17 connected to PSRAM)",
+   "edits": [
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_ETH_RMII_CLK_INPUT=y\n# CONFIG_ETH_RMII_CLK_OUTPUT is not set\nCONFIG_ETH_RMII_CLK_IN_GPIO=0\n",
+     "replace": "# CONFIG_ETH_RMII_CLK_INPUT is not set\nCONFIG_ETH_RMII_CLK_OUTPUT=y\n# CONFIG_ETH_RMII_CLK_OUTPUT_GPIO0 is not set\nCONFIG_ETH_RMII_CLK_OUT_GPIO=17\n"
+    }
+   ]
+  },
+  {
+   "id": "rmii-rxd0-rxd1-swapped-at-phy",
+   "expect": "RMII-PHY",
+   "site": "/RMII_RXD0, /RMII_RXD1 at U9",
+   "about": "The ESP32 side keeps RXD0=GPIO25 and RXD1=GPIO26, but the LAN8720's RXD0/RXD1 pins are swapped on the nets, so every received dibit is bit-swapped and no frame is ever received.",
+   "blind": "ESP32 Technical Reference Manual, Ethernet MAC chapter, RMII signal/IO_MUX table (EMAC_RXD0=GPIO25, EMAC_RXD1=GPIO26, fixed); ESP-IDF Ethernet guide, RMII pin table",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U9\")\n\t\t\t\t(pin \"8\")\n\t\t\t\t(pinfunction \"RXD0/MODE0_8\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"11\")\n\t\t\t\t(pinfunction \"IO26_11\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"11\")\n\t\t\t\t(pinfunction \"IO26_11\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"U9\")\n\t\t\t\t(pin \"8\")\n\t\t\t\t(pinfunction \"RXD0/MODE0_8\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U9\")\n\t\t\t\t(pin \"7\")\n\t\t\t\t(pinfunction \"RXD1/MODE1_7\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"10\")\n\t\t\t\t(pinfunction \"IO25_10\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"10\")\n\t\t\t\t(pinfunction \"IO25_10\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"U9\")\n\t\t\t\t(pin \"7\")\n\t\t\t\t(pinfunction \"RXD1/MODE1_7\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "auto-reset-transistors-swapped",
+   "expect": "AUTO-RESET",
+   "site": "EN / GPIO0 auto-program circuit (Q4, Q5)",
+   "about": "The collectors of the two auto-reset transistors are swapped, so DTR/RTS drive GPIO0 where EN should be and vice versa; esptool's reset sequence no longer enters the bootloader and a terminal's RTS can hold the chip in reset.",
+   "blind": "ESP32 Hardware Design Guidelines, 'Automatic bootloader / USB-UART' (DTR->EN, RTS->GPIO0 cross-coupled transistors as on ESP32-DevKitC); esptool docs, 'Automatic Bootloader'",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"Q4\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R31\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"R31\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"Q4\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"Q5\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"C32\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"C32\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"Q5\")\n\t\t\t\t(pin \"3\")\n\t\t\t\t(pinfunction \"C_3\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "i2c-scl-pull-to-ground",
+   "expect": "I2C-PULLUP",
+   "site": "/I2C_SCL pull-up R35",
+   "about": "R35 on SCL goes to GND instead of +3V3, so SCL has no pull-up (and a 2.2k pull-down): the open-drain bus never goes high and the PD sink, DAC, ADC and expander are unreachable.",
+   "blind": "ESP-IDF I2C driver guide, 'Pull-up' notes: the bus is open-drain and needs external pull-ups to VDD (internal ones too weak); ESP32 Hardware Design Guidelines, I2C",
+   "edits": [
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R35\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    },
+    {
+     "file": "boards/core/kicad/core.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R57\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": "\t\t\t(node\n\t\t\t\t(ref \"R57\")\n\t\t\t\t(pin \"2\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n\t\t\t(node\n\t\t\t\t(ref \"R35\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
+    }
+   ]
+  },
+  {
+   "id": "partition-table-offset-over-nvs",
+   "expect": "PART-OVERLAP",
+   "site": "CONFIG_PARTITION_TABLE_OFFSET vs nvs at 0x9000",
+   "about": "The partition table offset is moved to 0xA000 but the table still places nvs at 0x9000, so the table overlaps nvs (gen_esp32part rejects it; flashed anyway, nvs writes erase the table).",
+   "blind": "ESP-IDF Programming Guide, 'Partition Tables' > 'Offset & Size' (partitions must start after CONFIG_PARTITION_TABLE_OFFSET + 0x1000) and Kconfig CONFIG_PARTITION_TABLE_OFFSET",
+   "edits": [
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_PARTITION_TABLE_OFFSET=0x8000",
+     "replace": "CONFIG_PARTITION_TABLE_OFFSET=0xA000"
+    }
+   ]
+  },
+  {
+   "id": "coredump-to-flash-without-partition",
+   "expect": "COREDUMP-PART",
+   "site": "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH",
+   "about": "Core dump to flash is enabled but the partition table has no data/coredump partition, so every panic's dump is lost ('No core dump partition found').",
+   "blind": "ESP-IDF Programming Guide, 'Core Dump' > 'Save core dump to flash' (requires a partition of type data, subtype coredump); 'Partition Tables', SubType coredump",
+   "edits": [
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y",
+     "replace": "CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y"
+    },
+    {
+     "file": "firmware/board/core/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_ENABLE_COREDUMP_TO_NONE=y",
+     "replace": "CONFIG_ESP32_ENABLE_COREDUMP_TO_FLASH=y"
+    }
+   ]
   }
  ]
 }

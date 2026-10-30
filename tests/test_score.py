@@ -33,6 +33,22 @@ class Score(unittest.TestCase):
         self.assertIn("x/broken: BROKEN", out.getvalue())
         self.assertEqual(score.score(self.root, io.StringIO()), 1)
 
+    def test_a_blind_miss_lands_on_the_to_do_list_and_costs_nothing(self):
+        (self.b / "faults.json").write_text(json.dumps({"faults": [
+            {"id": "seen", "expect": "PART-OVERLAP", "site": "nvs", "blind": "IDF partition tables",
+             "edits": [{"file": "p.csv", "find": "0x6000", "replace": "0x8000"}]},
+            {"id": "unseen", "expect": "PART-TYPE", "site": "factory", "blind": "IDF partition tables: subtypes",
+             "about": "factory with an unknown subtype",
+             "edits": [{"file": "p.csv", "find": "app, factory", "replace": "app, fact0ry"}]}]}))
+        out = io.StringIO()
+        r = score.run(self.root, out)
+        self.assertEqual((r["caught"], r["faults"]), (1, 2))
+        self.assertEqual(len(r["todo"]), 1)
+        self.assertIn("x/unseen (PART-TYPE at factory): factory with an unknown subtype", r["todo"][0])
+        self.assertIn("to do: 1 blind fault(s) missed", out.getvalue())
+        self.assertIn("(1/2 blind)", out.getvalue())
+        self.assertEqual(score.score(self.root, io.StringIO()), 1)
+
     def test_a_near_duplicate_counts_nothing(self):
         (self.b / "faults.json").write_text(json.dumps({"faults": [
             {"id": "a", "expect": "PART-OVERLAP", "site": "nvs",

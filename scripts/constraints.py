@@ -43,8 +43,10 @@ straps (no two at one address on a bus, and the firmware's *_ADDR the one
 the board straps). The audio checks read the other parts' pin names, which
 a netlist or schematic has and a KiCad 10 layout's pads don't. From a
 netlist, also the resistors and capacitors around the ESP32: EN's reset
-RC, UART0's TX meeting the USB-UART's RX, I2C pull-ups, and buttons whose
-input nothing pulls. Each finding is a need (what the board must provide)
+RC (there, and slow enough), UART0's TX meeting the USB-UART's RX, the
+auto-reset transistors (DTR to GPIO0, RTS to EN), I2C pull-ups, buttons whose
+input nothing pulls, and with an RMII PHY its fixed pins and reference clock
+and an oscillator left running into GPIO0 through reset. Each finding is a need (what the board must provide)
 or a problem (the firmware or the board breaks one); exit 0 with no
 problems, 1 with one, 2 when there was nothing to read.
 
@@ -463,6 +465,17 @@ def expander_problems(e, bits: list[dict], addrs: dict | None, cfg: dict[int, tu
     return out
 
 
+def value_of(v: str, unit: str) -> float | None:
+    """A part's value (10k, 4K7, 1uF, 100n, 0.1µF) in ohms or farads."""
+    m = re.fullmatch(rf"\s*(\d+(?:\.\d+)?)\s*([pnuµμmkKMR]?)(\d*)\s*(?:{unit}|Ω|ohm)?\w*\s*", v or "")
+    if not m:
+        return None
+    mult = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3, "k": 1e3, "K": 1e3, "M": 1e6, "R": 1, "": 1}
+    if unit == "F" and m.group(2) in "kKMR" and m.group(2):
+        return None
+    return float(m.group(1) + (("." + m.group(3)) if m.group(3) else "")) * mult[m.group(2)]
+
+
 def board_problems(esp, fw_pins: list[dict], buttons: list, mod: dict, problem, where: str) -> None:
     """What a board read from its netlist breaks: the ESP32's reset, its
     serial port, the crystal, I2C pull-ups and buttons left floating."""
@@ -474,6 +487,26 @@ def board_problems(esp, fw_pins: list[dict], buttons: list, mod: dict, problem, 
             problem("POWER-EN", "power", f"{esp.ref}'s EN ({en or 'unconnected'}) has no {' and no '.join(miss)}: "
                     "the chip needs EN held low until 3.3 V settles and then pulled high (Espressif: 10 kΩ up and "
                     "1 µF down), or it starts on a sagging rail and may not boot", where)
+        rs = [value_of(esp.parts.get(r, ""), "R") for r, to in esp.pulls.get(en, []) if to == "up"] if en else []
+        cs = [value_of(v, "F") for _, v in esp.caps.get(en, [])] if en else []
+        if rs and cs and None not in rs + cs:
+            tau = sum(cs) / sum(1 / r for r in rs)
+            if tau < 50e-6:
+                problem("POWER-EN", "power", f"{esp.ref}'s EN RC ({', '.join(r for r, _ in esp.pulls[en])} with "
+                        f"{', '.join(c for c, _ in esp.caps[en])}) is {tau * 1e6:.3g} µs: EN rises before 3.3 V settles "
+                        "(the datasheet wants it 50 µs or more after the rail; Espressif's 10 kΩ and 1 µF give 10 ms)", where)
+    for pin, emitter in (("EN", "RTS"), ("GPIO0", "DTR")):
+        net = en if pin == "EN" else esp.gpios.get(0)
+        for q, fn in esp.nets.get(net, []) if net and net != "absent" else []:
+            if not re.fullmatch(r"Q\d+", q) or not fn.upper().startswith("C"):
+                continue
+            e_net = next((n for n, ns in esp.nets.items() for r, f in ns if r == q and f.upper().startswith("E")), None)
+            ctl = {re.sub(r"[^A-Z]", "", f.upper()) for r, f in esp.nets.get(e_net, []) if r != q} if e_net else set()
+            wrong = "DTR" if emitter == "RTS" else "RTS"
+            if wrong in ctl and emitter not in ctl:
+                problem("AUTO-RESET", "board", f"{q} pulls {pin} ({net}) low with its emitter on {wrong} ({e_net}): "
+                        f"esptool's reset wants {pin}'s transistor on {emitter} (DTR to GPIO0, RTS to EN, cross-coupled), "
+                        "so the board doesn't enter download mode", where)
     for g, own, other in ((1, "TX", "RX"), (3, "RX", "TX")):
         net = esp.gpios.get(g, "absent")
         if net == "absent":
@@ -504,6 +537,51 @@ def board_problems(esp, fw_pins: list[dict], buttons: list, mod: dict, problem, 
         why = "GPIO34-39 have no internal pulls" if g in INPUT_ONLY else "the firmware turns the internal pull off"
         problem("PIN-FLOAT", "board", f"the {act} button on GPIO{g} ({net}) has no pull resistor on the board and {why}: "
                 "the input floats and presses itself", w)
+
+
+def rmii_problems(esp, clk: int | None, problem, where: str) -> None:
+    """The internal EMAC's fixed pins against the PHY's on the board, its
+    reference clock, and a clock oscillator that runs into GPIO0 at reset."""
+    phys = {r for r, v in esp.parts.items() if re.fullmatch(RMII_PHYS, v.upper().split("/")[0], re.I)}
+    if not phys:
+        return
+    norm = lambda fn: {t.replace("_", "") for t in re.split(r"[/\s]+", re.sub(r"_\d+$", "", fn.upper()))}  # noqa: E731
+    for g, fn in RMII.items():
+        net = esp.gpios.get(g)
+        at = [(r, f) for r, f in esp.nets.get(net, []) if r in phys] if net else []
+        if not at:
+            problem("RMII-PHY", "board", f"GPIO{g}, the EMAC's RMII {fn}, reaches no pin of the PHY "
+                    f"({', '.join(sorted(phys))}): its RMII pins are fixed in silicon", where)
+        elif not any(fn.replace("_", "") in norm(f) for _, f in at):
+            problem("RMII-PHY", "board", f"GPIO{g}, the EMAC's RMII {fn}, goes to {', '.join(r + ' ' + f for r, f in at)}, "
+                    f"not the PHY's {fn}: the EMAC's RMII pins are fixed in silicon", where)
+    clock_pin = lambda f: bool(norm(f) & {"XTAL1", "CLKIN", "REFCLK", "REFCLKO", "XI", "X1", "REFCLKIN"})  # noqa: E731
+    if clk is not None:
+        net = esp.gpios.get(clk)
+        if not net or not any(r in phys and clock_pin(f) for r, f in esp.nets.get(net, [])):
+            problem("RMII-CLK", "board", f"the firmware takes the RMII clock on GPIO{clk} ({net or 'unconnected'}), "
+                    "which doesn't reach the PHY's reference clock pin", where)
+    # an oscillator into GPIO0, straight or through a series resistor, must be off while the straps are read
+    net0 = esp.gpios.get(0)
+    if not net0:
+        return
+    near = {net0}
+    for r, _ in esp.nets.get(net0, []):
+        if re.fullmatch(r"R\d+", r):
+            near |= {n for n, ns in esp.nets.items() if any(x == r for x, _ in ns)}
+    supply = lambda n: n is None or pins.SUPPLY.fullmatch(n)  # noqa: E731
+    for n in near:
+        for r, f in esp.nets.get(n, []):
+            if r == esp.ref or not norm(f) & {"OUT", "OUTPUT", "CLKOUT"}:
+                continue
+            pins_of = {f2: n2 for n2, ns in esp.nets.items() for r2, f2 in ns if r2 == r}
+            oe = [(f2, n2) for f2, n2 in pins_of.items() if norm(f2) & {"OE", "EN", "TRISTATE", "TRI-STATE", "ST", "E/D"}]
+            # an enable pin left out of every net is unconnected: these oscillators run then
+            if any(supply(n2) for _, n2 in oe) or (not oe and r[0] in "XY"):
+                problem("STRAP-0", "board", f"{r} {esp.parts.get(r, '')} drives GPIO0 ({net0}) and its enable "
+                        f"({', '.join(f2 + ' on ' + str(n2) for f2, n2 in oe) or 'not connected'}) keeps it running "
+                        "through reset: GPIO0 is a strap, so its clock must stay off until the chip boots "
+                        "(IDF Ethernet guide)", where)
 
 
 def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = None) -> dict:
@@ -593,6 +671,10 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
         if sdk_path and (wifi or bt) and not any(p["name"] == "nvs" for p in table):
             problem("PART-NVS", "flash", "no partition named nvs: nvs_flash_init() opens the one labelled nvs, and "
                     "Wi-Fi and Bluetooth keep their calibration and settings there, so neither starts", tbl_from)
+        dump = next((k for k in ("CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH", "CONFIG_ESP32_ENABLE_COREDUMP_TO_FLASH") if on(k)), None)
+        if dump and not any(p["type"] == "data" and p["subtype"] == "coredump" for p in table):
+            problem("COREDUMP-PART", "flash", f"{dump} saves a panic's core dump to flash, but the table has no data, "
+                    "coredump partition: every dump is lost (IDF Core Dump guide)", tbl_from)
 
     # memory
     mem = memory(build)
@@ -663,6 +745,13 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                 clk = g
         if sdk.get("CONFIG_ETH_RMII_CLK_IN_GPIO", "").isdigit():
             clk = int(sdk["CONFIG_ETH_RMII_CLK_IN_GPIO"])
+        if on("CONFIG_ETH_RMII_CLK_OUTPUT"):
+            out_gpio = sdk.get("CONFIG_ETH_RMII_CLK_OUT_GPIO", "0" if on("CONFIG_ETH_RMII_CLK_OUTPUT_GPIO0") else "")
+            clk = int(out_gpio) if out_gpio.isdigit() else clk
+            if clk in PSRAM and psram:
+                problem("RMII-CLK", "pins", f"the EMAC puts the RMII clock out on GPIO{clk}, the PSRAM's on a WROVER: "
+                        "with PSRAM on, the clock must come in on GPIO0 (IDF Ethernet guide, RMII clock)",
+                        f"{sdk_from} CONFIG_ETH_RMII_CLK_OUT_GPIO")
         periph["rmii"] = {"phy": eth[1], "pins": {str(g): n for g, n in RMII.items()}, "clock": clk}
         need("pins", f"the {eth[1]} on the internal EMAC's fixed RMII pins: "
              + ", ".join(f"GPIO{g} {n}" for g, n in RMII.items())
@@ -819,6 +908,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
             bd["i2c"] = i2c_parts(esp)
             if target == "esp32" and esp.netlist:
                 board_problems(esp, fw_pins, buttons, mod, problem, str(path))
+                if eth:
+                    rmii_problems(esp, periph["rmii"]["clock"], problem, str(path))
             boards.append(bd)
         if files:
             res = pins.check(project, {**cfg, "board": files})
