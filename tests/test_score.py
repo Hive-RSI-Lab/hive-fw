@@ -33,6 +33,17 @@ class Score(unittest.TestCase):
         self.assertIn("x/broken: BROKEN", out.getvalue())
         self.assertEqual(score.score(self.root, io.StringIO()), 1)
 
+    def test_a_near_duplicate_counts_nothing(self):
+        (self.b / "faults.json").write_text(json.dumps({"faults": [
+            {"id": "a", "expect": "PART-OVERLAP", "site": "nvs",
+             "edits": [{"file": "p.csv", "find": "0x6000", "replace": "0x8000"}]},
+            {"id": "b", "expect": "PART-OVERLAP", "site": "nvs",
+             "edits": [{"file": "p.csv", "find": "0x6000", "replace": "0x9000"}]}]}))
+        out = io.StringIO()
+        r = score.run(self.root, out)
+        self.assertEqual((r["caught"], r["faults"]), (1, 1))
+        self.assertIn("x/b: DUPLICATE", out.getvalue())
+
     def test_a_false_alarm_on_the_clean_base_costs_a_point(self):
         (self.b / "p.csv").write_text("nvs, data, nvs, 0x8000, 0x6000,\nfactory, app, factory, 0x10000, 0x100000,\n")
         self.faults(("ota", "factory, app, factory", "ota_0, app, ota_0"))
@@ -55,6 +66,10 @@ class Corpus(unittest.TestCase):
         r = score.run(_util.ROOT, io.StringIO())
         self.assertEqual(r["false_alarms"], 0)
         self.assertEqual([x["id"] for x in r["results"] if x["broken"]], [])
+        self.assertEqual([x["id"] for x in r["results"] if x["duplicate"]], [])
+        for b in score.bases():
+            for f in json.loads((b / "faults.json").read_text())["faults"]:
+                self.assertTrue(f.get("expect") and f.get("site"), f"{b.name}/{f['id']} needs expect and site")
         expect = {f["id"]: f["expect"] for b in score.bases()
                   for f in json.loads((b / "faults.json").read_text())["faults"]}
         for x in r["results"]:

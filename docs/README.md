@@ -194,7 +194,7 @@ What it reads, and the needs it turns that into:
   reader), each against the ESP32's rules: the flash pins (6-11) and a
   WROVER's PSRAM pins (16/17) are taken; 34-39 are input only, with no
   pull-ups inside; strapping levels at reset (GPIO0 high, GPIO2 low or
-  floating, GPIO12 low for 3.3 V flash, so a GPIO12 in use is STRAP-12);
+  floating, GPIO12 low for 3.3 V flash);
   ADC2 reads nothing while Wi-Fi is on (ADC2-WIFI); one GPIO given two
   unrelated jobs is PIN-SHARED. PSRAM off while other settings put data in
   it (Bluetooth's buffers, malloc) is SPIRAM-OFF. An RMII PHY (`model=LAN8720`, or `#define ...RMII...`) puts the
@@ -206,12 +206,16 @@ What it reads, and the needs it turns that into:
 - **The board**, when one is named (`--board`, or the config's `board`): the
   ESP32 part's name against the module needs (ESP32-WROVER-E-N8R8 means
   8 MB of flash, 8 MB of PSRAM, a v3 chip), and the pin map against its nets
-  (`fw pins`'s check).
+  (`fw pins`'s check, PIN-NET), and the board's pull resistors on the
+  straps (from a `.net`): one that holds GPIO0 low, or GPIO2 or GPIO12 high,
+  at reset is STRAP-0/2/12. A strap the firmware uses with no such resistor
+  stays a need, not a problem: the hifi core board's IO12 drives a PCM5102A
+  DIN, high-Z at boot, and is fine.
 
 Each finding is either a **need** (something the board must provide) or a
 **problem** (something the firmware or the board breaks), printed as
 `PROBLEM CODE: what` (in the JSON, `code`; the codes: PIN-NET, PIN-SHARED,
-PIN-FLASH, PIN-INPUT, PIN-RMII, STRAP-12, ADC2-WIFI, SPIRAM-OFF, PART-*,
+PIN-FLASH, PIN-INPUT, PIN-RMII, STRAP-0/2/12, ADC2-WIFI, SPIRAM-OFF, PART-*,
 BOARD-*). The command exits
 0 with no problems, 1 with one, and 2 when there was nothing to read. Where
 to look is set by `constraints` in fw.json or in a target's pins;
@@ -272,7 +276,9 @@ work on.
   ADC2 with Wi-Fi, a partition past the flash, an image over its slot...).
   Each fault is planted in a scratch copy of the base (in /dev/shm), and it
   is caught when `fw constraints` reports a problem with it planted that it
-  doesn't on the clean base; every problem on a clean base costs a point. It
+  doesn't on the clean base; every problem on a clean base costs a point.
+  Each fault names its kind (`expect`) and `site`; a second fault of the
+  same kind at the same site is a near-duplicate and counts nothing. It
   reads only this module's files, in about a second. It has no top:
   to raise it,
   - make a check catch a fault it misses (`fw score` prints each);

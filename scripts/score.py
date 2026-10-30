@@ -7,7 +7,12 @@ board's netlist) with a fw.json saying where things are (`fw constraints`,
 fw's one checker), and faults.json, the planted faults: each a list of
 edits (find, replace; each find must occur exactly once), planted in a
 scratch copy of the base. A fault is caught when the checker reports a
-problem with it planted that it doesn't report on the clean base. The score is faults caught minus false alarms (errors on a clean base),
+problem with it planted that it doesn't report on the clean base. Each
+fault names its kind ("expect", the check it's for) and its "site" (the
+signal, setting or partition it breaks): a second fault of the same kind at
+the same site is a near-duplicate and counts nothing, so only a distinct
+real mistake raises the score. The score is faults caught minus false
+alarms (problems on a clean base),
 higher is better and unbounded: a new kind of fault, a new check, or a new
 base raises it. It reads the corpus only, nothing outside this module, so it
 reads the same in any sandbox. Prints one line per fault, then the number.
@@ -68,7 +73,16 @@ def run(root: Path = ROOT, out=sys.stdout) -> dict:
             alarms += len(clean)
             for x in sorted(clean):
                 print(f"{b.name}: false alarm on the clean base: {x}", file=out)
+            seen: set[tuple[str, str]] = set()
             for fault in json.loads((b / "faults.json").read_text(encoding="utf-8"))["faults"]:
+                key = (fault.get("expect", ""), fault.get("site", fault["id"]))
+                if key in seen:
+                    results.append({"base": b.name, "id": fault["id"], "caught": False, "by": [],
+                                    "broken": "", "duplicate": True})
+                    print(f"{b.name}/{fault['id']}: DUPLICATE of another {key[0]} fault at {key[1]}; not counted",
+                          file=out)
+                    continue
+                seen.add(key)
                 total += 1
                 why = plant(b, work, fault["edits"])
                 new = sorted(errors(work) - clean) if not why else []
@@ -77,7 +91,8 @@ def run(root: Path = ROOT, out=sys.stdout) -> dict:
                 hit = bool(new)
                 caught += hit
                 by = sorted({x.split(":", 1)[0] for x in new})
-                results.append({"base": b.name, "id": fault["id"], "caught": hit, "by": by, "broken": why})
+                results.append({"base": b.name, "id": fault["id"], "caught": hit, "by": by, "broken": why,
+                                "duplicate": False})
                 line = f"caught by {', '.join(by)}" if hit else f"BROKEN: {why}" if why else \
                     f"missed (meant for {fault.get('expect', '?')})"
                 print(f"{b.name}/{fault['id']}: {line}", file=out)
