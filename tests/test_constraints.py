@@ -341,6 +341,11 @@ class AudioPath(unittest.TestCase):
         got = self.problems_on(net.format(exp="PCA9539", mck_pin="IO0", codec_in="DSDIN_6", ce="x"))
         self.assertEqual(got, ["I2C-ADDR: the firmware talks to ES8388 at 0x10, but U2 ES8388's address straps put it at 0x11"])
 
+    def test_an_8_bit_address(self):
+        got = self.problems(h="#define ES8388_ADDR 0x20\n")  # the datasheet's write address, not the 7-bit 0x10
+        self.assertIn("I2C-ADDR: ES8388 at 0x20, but a ES8388 answers only at 0x10 or 0x11: 0x20 is its 8-bit "
+                      "(write) address, the 7-bit one shifted left", got)
+
     def problems_on(self, net):
         p = Path(tempfile.mkdtemp())
         (p / "board.h").write_text("#define ES8388_ADDR 0x10\n#define PIN_I2S_MCLK 0\n")
