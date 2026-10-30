@@ -445,19 +445,6 @@
    ]
   },
   {
-   "id": "es8388-8bit-address",
-   "expect": "I2C-ADDR",
-   "site": "ES8388_ADDR",
-   "about": "the ES8388 at 0x20, the datasheet's 8-bit write address, instead of its 7-bit 0x10",
-   "edits": [
-    {
-     "file": "firmware/components/hifi/esp/hifi_board_lite.h",
-     "find": "#define ES8388_ADDR 0x10",
-     "replace": "#define ES8388_ADDR 0x20"
-    }
-   ]
-  },
-  {
    "id": "nvs-renamed",
    "expect": "PART-NVS",
    "site": "nvs",

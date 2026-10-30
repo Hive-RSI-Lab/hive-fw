@@ -233,14 +233,15 @@ class Expander(unittest.TestCase):
     NET = """(export (version "E")
   (components
     (comp (ref "U1") (value "ESP32-WROVER-E-N8R8") (footprint "RF_Module:ESP32-WROVER-E"))
-    (comp (ref "U2") (value "TCA9539") (footprint "TSSOP-24")))
+    (comp (ref "U2") (value "TCA9539") (footprint "TSSOP-24"))
+    (comp (ref "R1") (value "2.2k")))
   (nets
-    (net (code "1") (name "/I2C_SDA") (node (ref "U1") (pin "16") (pinfunction "IO13")))
+    (net (code "1") (name "/I2C_SDA") (node (ref "U1") (pin "16") (pinfunction "IO13")) (node (ref "R1") (pin "2")))
     (net (code "2") (name "/AMP_RST") (node (ref "U2") (pin "4") (pinfunction "P00_4")))
     (net (code "3") (name "/PVDD_EN") (node (ref "U2") (pin "5") (pinfunction "P01_5")))
     (net (code "4") (name "/AMP_FAULT") (node (ref "U2") (pin "13") (pinfunction "P10_13")))
     (net (code "5") (name "GND") (node (ref "U2") (pin "2") (pinfunction "A1_2")))
-    (net (code "6") (name "+3V3") (node (ref "U2") (pin "21") (pinfunction "A0_21")))))
+    (net (code "6") (name "+3V3") (node (ref "U2") (pin "21") (pinfunction "A0_21")) (node (ref "R1") (pin "1")))))
 """
     H = ("#define I2C_SDA 13\n#define EXP_ADDRS {0x74, 0x75}\n#define EXP_REG_IN0 0x00\n"
          "#define EXP_AMP_RST 0\n#define EXP_PVDD_EN 1\n#define EXP_AMP_FAULT 8 /* low = fault */\n"
@@ -288,15 +289,16 @@ class AudioPath(unittest.TestCase):
   (components
     (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
     (comp (ref "U2") (value "ES8388"))
-    (comp (ref "U3") (value "{exp}")))
+    (comp (ref "U3") (value "{exp}"))
+    (comp (ref "R1") (value "2.2k")) (comp (ref "R2") (value "2.2k")))
   (nets
     (net (code "1") (name "/I2S_MCLK") (node (ref "U1") (pin "25") (pinfunction "{mck_pin}")) (node (ref "U2") (pin "1") (pinfunction "MCLK_1")))
     (net (code "2") (name "/I2S_DOUT") (node (ref "U1") (pin "11") (pinfunction "IO26")) (node (ref "U2") (pin "6") (pinfunction "{codec_in}")))
     (net (code "3") (name "/I2S_DIN") (node (ref "U1") (pin "7") (pinfunction "IO35")) (node (ref "U2") (pin "8") (pinfunction "ASDOUT_8")))
-    (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")))
-    (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")))
+    (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")) (node (ref "R1") (pin "2")))
+    (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")) (node (ref "R2") (pin "2")))
     (net (code "6") (name "GND") (node (ref "U2") (pin "26") (pinfunction "{ce}")) (node (ref "U3") (pin "21") (pinfunction "A0")) (node (ref "U3") (pin "2") (pinfunction "A1")) (node (ref "U3") (pin "3") (pinfunction "A2")))
-    (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")))))
+    (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")) (node (ref "R1") (pin "1")) (node (ref "R2") (pin "1")))))
 """
 
     def problems(self, mck=0, h="#define ES8388_ADDR 0x10\n", **net):
