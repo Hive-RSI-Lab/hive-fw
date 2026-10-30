@@ -228,6 +228,59 @@ class WithPins(unittest.TestCase):
         self.assertNotIn("STRAP-2", {x["code"] for x in self.run_report("ESP32-WROVER-E-N8R8")["problems"]})
 
 
+class Expander(unittest.TestCase):
+    """The firmware's I/O expander bits against the board's expander."""
+    NET = """(export (version "E")
+  (components
+    (comp (ref "U1") (value "ESP32-WROVER-E-N8R8") (footprint "RF_Module:ESP32-WROVER-E"))
+    (comp (ref "U2") (value "TCA9539") (footprint "TSSOP-24")))
+  (nets
+    (net (code "1") (name "/I2C_SDA") (node (ref "U1") (pin "16") (pinfunction "IO13")))
+    (net (code "2") (name "/AMP_RST") (node (ref "U2") (pin "4") (pinfunction "P00_4")))
+    (net (code "3") (name "/PVDD_EN") (node (ref "U2") (pin "5") (pinfunction "P01_5")))
+    (net (code "4") (name "/AMP_FAULT") (node (ref "U2") (pin "13") (pinfunction "P10_13")))
+    (net (code "5") (name "GND") (node (ref "U2") (pin "2") (pinfunction "A1_2")))
+    (net (code "6") (name "+3V3") (node (ref "U2") (pin "21") (pinfunction "A0_21")))))
+"""
+    H = ("#define I2C_SDA 13\n#define EXP_ADDRS {0x74, 0x75}\n#define EXP_REG_IN0 0x00\n"
+         "#define EXP_AMP_RST 0\n#define EXP_PVDD_EN 1\n#define EXP_AMP_FAULT 8 /* low = fault */\n"
+         "#define EXP_CFG0 0x00\n#define EXP_CFG1 0xFF\n")
+
+    def problems(self, h=None, net=None):
+        p = Path(tempfile.mkdtemp())
+        (p / "b.h").write_text(h or self.H)
+        (p / "b.net").write_text(net or self.NET)
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net"})
+        return [(x["code"], x["problem"]) for x in res["problems"]], res
+
+    def test_a_good_map(self):
+        probs, res = self.problems()
+        self.assertEqual(probs, [])
+        self.assertEqual((res["boards"][0]["expander"]["ref"], res["boards"][0]["expander"]["addr"]), ("U2", 0x75))
+
+    def test_a_bit_on_the_wrong_net(self):
+        probs, _ = self.problems(self.H.replace("EXP_PVDD_EN 1", "EXP_PVDD_EN 0"))
+        self.assertIn(("EXP-NET", "EXP_PVDD_EN is U2 P00 (AMP_RST), but the board has PVDD_EN on P01"), probs)
+        probs, _ = self.problems(self.H.replace("EXP_PVDD_EN 1", "EXP_PVDD_EN 2"))
+        self.assertEqual([c for c, _ in probs], ["EXP-NET"])
+
+    def test_the_strapped_address_is_tried(self):
+        probs, _ = self.problems(self.H.replace("{0x74, 0x75}", "{0x20, 0x74}"))
+        self.assertEqual([c for c, _ in probs], ["EXP-ADDR"])
+        self.assertIn("strapped to 0x75 (A0 +3V3, A1 GND)", probs[0][1])
+
+    def test_directions(self):
+        probs, _ = self.problems(self.H.replace("EXP_CFG0 0x00", "EXP_CFG0 0x02"))
+        self.assertEqual([c for c, _ in probs], ["EXP-DIR"])
+        self.assertIn("EXP_PVDD_EN (P01) is an output", probs[0][1])
+        probs, _ = self.problems(self.H.replace("EXP_CFG1 0xFF", "EXP_CFG1 0xFE"))
+        self.assertIn("EXP_AMP_FAULT (P10) is an input", probs[0][1])
+
+    def test_no_expander_no_check(self):
+        net = self.NET.replace('(value "TCA9539")', '(value "LM358")')
+        self.assertEqual(self.problems(net=net)[0], [])
+
+
 class AudioPath(unittest.TestCase):
     """MCLK on a pin that carries it, I2S data out into a data in, one
     address per I2C part on a bus, the firmware's addresses the board's."""

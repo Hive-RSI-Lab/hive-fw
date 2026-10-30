@@ -247,6 +247,78 @@ def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
 KICAD_TIMEOUT = int(os.environ.get("FW_KICAD_TIMEOUT", "180"))
 
 
+# ---- I2C I/O expanders: their port pins' nets and address straps ----------
+
+# part -> its 7-bit address with every address pin low, and its pins A2..A0 in
+# the address's low bits; the TCA9539 has two (A1, A0) from 0x74
+EXPANDERS = [
+    (r"[TP]CA9539", 0x74), (r"[TP]CAL?95[35]5", 0x20), (r"[TP]CAL?6416", 0x20),
+    (r"[TP]CAL?9554A|PCF857[45]A", 0x38), (r"[TP]CAL?95[35]4|PCF857[45]|MCP230(?:08|17)", 0x20),
+    (r"XL9535", 0x20), (r"AW9523", 0x58),
+]
+
+
+class Expander:
+    """An I/O expander on a board: ref, part, bit -> net (P00..P17 are bits
+    0..15, MCP230xx's GPA/GPB likewise, an 8-bit part's P0..P7 bits 0..7) and
+    its address as strapped (None when a strap isn't tied to a rail)."""
+
+    def __init__(self, ref: str, part: str, bits: dict[int, str | None], addr: int | None, straps: dict[str, str | None]):
+        self.ref, self.part, self.bits, self.addr, self.straps = ref, part, bits, addr, straps
+
+
+def expander_bit(pinfunction: str) -> int | None:
+    f = re.sub(r"_\d+$", "", pinfunction.upper())
+    m = re.fullmatch(r"(?:P|IO)([01])_?([0-7])", f) or re.fullmatch(r"GP([AB])([0-7])", f)
+    if m:
+        port = {"0": 0, "1": 1, "A": 0, "B": 1}[m.group(1)]
+        return port * 8 + int(m.group(2))
+    m = re.fullmatch(r"P([0-7])", f)
+    return int(m.group(1)) if m else None
+
+
+def read_expanders(path: Path) -> list[Expander]:
+    """The I/O expanders on a board's netlist (a schematic's sibling .net);
+    none from a layout, whose pads carry no pin names."""
+    net = path if path.suffix == ".net" else path.with_suffix(".net")
+    if path.suffix == ".kicad_pcb" or not net.is_file():
+        return []
+    root = sexp(net.read_text(encoding="utf-8"))
+    parts = {}
+    for comps_node in kids(root, "components"):
+        for c in kids(comps_node, "comp"):
+            v = val(c, "value")
+            base = next((b for pat, b in EXPANDERS if re.search(pat, v.upper())), None)
+            if base is not None:
+                parts[val(c, "ref")] = (v, base)
+    bits: dict[str, dict[int, str | None]] = {r: {} for r in parts}
+    straps: dict[str, dict[str, str | None]] = {r: {} for r in parts}
+    for nets in kids(root, "nets"):
+        for n in kids(nets, "net"):
+            name = net_name(val(n, "name"))
+            for node in kids(n, "node"):
+                ref = val(node, "ref")
+                if ref not in parts:
+                    continue
+                fn = val(node, "pinfunction")
+                b = expander_bit(fn)
+                if b is not None:
+                    bits[ref][b] = name
+                elif re.fullmatch(r"A[0-2]", re.sub(r"_\d+$", "", fn.upper())):
+                    straps[ref][re.sub(r"_\d+$", "", fn.upper())] = name
+    out = []
+    for ref, (v, base) in sorted(parts.items()):
+        addr: int | None = base
+        for a, nm in straps[ref].items():
+            hi = bool(nm and SUPPLY.fullmatch(nm))
+            if not hi and not (nm and GROUND.fullmatch(nm)):
+                addr = None
+                break
+            addr |= hi << int(a[1])
+        out.append(Expander(ref, v, bits[ref], addr if straps[ref] else None, straps[ref]))
+    return out
+
+
 def kicad_cli() -> str | None:
     if os.environ.get("KICAD_CLI"):
         return os.environ["KICAD_CLI"]
