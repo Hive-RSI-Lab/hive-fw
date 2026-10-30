@@ -228,6 +228,78 @@ class WithPins(unittest.TestCase):
         self.assertNotIn("STRAP-2", {x["code"] for x in self.run_report("ESP32-WROVER-E-N8R8")["problems"]})
 
 
+class AudioPath(unittest.TestCase):
+    """MCLK on a pin that carries it, I2S data out into a data in, one
+    address per I2C part on a bus, the firmware's addresses the board's."""
+    NET = """(export (version "E")
+  (components
+    (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
+    (comp (ref "U2") (value "ES8388"))
+    (comp (ref "U3") (value "{exp}")))
+  (nets
+    (net (code "1") (name "/I2S_MCLK") (node (ref "U1") (pin "25") (pinfunction "{mck_pin}")) (node (ref "U2") (pin "1") (pinfunction "MCLK_1")))
+    (net (code "2") (name "/I2S_DOUT") (node (ref "U1") (pin "11") (pinfunction "IO26")) (node (ref "U2") (pin "6") (pinfunction "{codec_in}")))
+    (net (code "3") (name "/I2S_DIN") (node (ref "U1") (pin "7") (pinfunction "IO35")) (node (ref "U2") (pin "8") (pinfunction "ASDOUT_8")))
+    (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")))
+    (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")))
+    (net (code "6") (name "GND") (node (ref "U2") (pin "26") (pinfunction "{ce}")) (node (ref "U3") (pin "21") (pinfunction "A0")) (node (ref "U3") (pin "2") (pinfunction "A1")) (node (ref "U3") (pin "3") (pinfunction "A2")))
+    (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")))))
+"""
+
+    def problems(self, mck=0, h="#define ES8388_ADDR 0x10\n", **net):
+        p = Path(tempfile.mkdtemp())
+        (p / "board.h").write_text(f"#define PIN_I2S_MCLK {mck}\n#define PIN_I2S_DOUT 26\n#define PIN_I2S_DIN 35\n"
+                                   "#define I2C_SDA 33\n#define I2C_SCL 32\n" + h)
+        kw = {"exp": "PCA9539", "mck_pin": f"IO{mck}", "codec_in": "DSDIN_6", "ce": "CE_26", **net}
+        (p / "b.net").write_text(self.NET.format(**kw))
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net"})
+        return [f"{x['code']}: {x['problem']}" for x in res["problems"] if x["code"].startswith(("I2S", "I2C"))]
+
+    def test_a_good_audio_path(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_mclk_off_gpio_0_1_3(self):
+        got = self.problems(mck=5)
+        self.assertEqual(sorted(x.split(":")[0] for x in got), ["I2S-MCLK", "I2S-MCLK"])
+        self.assertIn("U2's MCLK is on GPIO5", " ".join(got))
+
+    def test_data_out_into_data_out(self):
+        got = self.problems(codec_in="ASDOUT_6")
+        self.assertEqual(len(got), 1)
+        self.assertIn("I2S-DIR: GPIO26 PIN_I2S_DOUT is the ESP32's I2S data out, but I2S_DOUT goes to U2 ES8388's ASDOUT", got[0])
+
+    def test_two_parts_at_one_address(self):
+        got = self.problems(exp="PCF8574")  # 0x20 with A2..A0 low; the ES8388 is 0x10
+        self.assertEqual(got, [])
+        got = self.problems(exp="TCA9555", h="#define ES8388_ADDR 0x10\n#define EXP_ADDR 0x20\n#define DSP_ADDR 0x20\n")
+        self.assertEqual(got, ["I2C-CLASH: EXP and DSP are all at I2C address 0x20"])
+        net = self.NET.replace('(pinfunction "A0")', '(pinfunction "x")')  # an unread strap: no address, no claim
+        self.assertEqual(constraints.i2c_parts(_board(net.format(exp="TCA9555", mck_pin="IO0", codec_in="DSDIN_6",
+                                                                     ce="CE_26")))[1]["addr"], None)
+
+    def test_board_clash_and_firmware_address(self):
+        net = self.NET.replace('(pinfunction "A0")', '(pinfunction "CE")')  # U3 a second ES8388, CE low
+        got = self.problems_on(net.format(exp="ES8388", mck_pin="IO0", codec_in="DSDIN_6", ce="CE_26"))
+        self.assertIn("I2C-CLASH: U2 ES8388 and U3 ES8388 are all at I2C address 0x10 on I2C_SDA: "
+                      "one of them needs other address straps", got)
+        net = self.NET.replace('(pinfunction "DVDD")', '(pinfunction "CE_26")')  # CE high: 0x11
+        got = self.problems_on(net.format(exp="PCA9539", mck_pin="IO0", codec_in="DSDIN_6", ce="x"))
+        self.assertEqual(got, ["I2C-ADDR: the firmware talks to ES8388 at 0x10, but U2 ES8388's address straps put it at 0x11"])
+
+    def problems_on(self, net):
+        p = Path(tempfile.mkdtemp())
+        (p / "board.h").write_text("#define ES8388_ADDR 0x10\n#define PIN_I2S_MCLK 0\n")
+        (p / "b.net").write_text(net)
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net"})
+        return [f"{x['code']}: {x['problem']}" for x in res["problems"] if x["code"].startswith(("I2S", "I2C"))]
+
+
+def _board(net: str):
+    p = Path(tempfile.mkdtemp()) / "b.net"
+    p.write_text(net)
+    return constraints.pins.read_board(p)[0][0]
+
+
 class Partitions(unittest.TestCase):
     """The table rules fw lint (task 261030-030425) had, now the checker's."""
     T = "# n, t, s, o, size\nnvs, data, nvs, 0x9000, 0x4000,\notadata, data, ota, , 0x2000,\n" \
