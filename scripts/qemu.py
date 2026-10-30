@@ -312,8 +312,9 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
             log_path.write_bytes(buf + extra)
     if reached_at is not None and v.ok:
         v = bootlog.judge(buf.decode(errors="replace"), expect)
-        if v.ok and prober and prober.result:
-            v = bootlog.Verdict(True, f"{v.reason}; {prober.result.reason}", True)
+        if v.ok and prober and prober.result:  # the probes can fail as the run times out
+            v = (bootlog.Verdict(True, f"{v.reason}; {prober.result.reason}", True)
+                 if prober.result.ok else prober.result)
     return v
 
 
