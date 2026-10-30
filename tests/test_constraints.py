@@ -127,6 +127,17 @@ class Constraints(unittest.TestCase):
         (self.p / "board.h").write_text("#define PIN_RMII_TXD0 19\n")
         self.assertEqual(self.run_report({"sources": ["*.h"]})["peripherals"]["rmii"]["phy"], "RMII PHY")
 
+    def test_without_when_the_boards_folder_sdkconfig_decides(self):
+        (self.p / "sdkconfig.defaults").unlink(missing_ok=True)
+        (self.p / "Kconfig.patch").write_text(
+            '+\tdefault "model=LAN8720,mdc=23" if BOARD_A\n'
+            '+\tdefault "model=IP101,mdc=23" if BOARD_B || BOARD_C\n')
+        (self.p / "board" / "bee").mkdir(parents=True)
+        (self.p / "board" / "bee" / "sdkconfig.defaults").write_text("CONFIG_BOARD_B=y\n# CONFIG_BOARD_A is not set\n")
+        res = self.run_report({"sources": ["*.patch"], "board": "../boards/bee/kicad/bee.kicad_pcb"})
+        self.assertEqual(res["sdkconfig"], "board/bee/sdkconfig.defaults")
+        self.assertEqual(res["peripherals"]["rmii"]["phy"], "IP101")
+
     def test_memory_from_elf(self):
         b = self.p / "build"
         b.mkdir()
