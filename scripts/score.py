@@ -9,7 +9,9 @@ up):
   - targets.json: real products in other Hive projects, first the hifi
     receiver's Lite firmware (hifi-receiver-2's firmware/).
 A stage counts when proof/<name>.json, written by `fw check-all`, records it
-passed on the firmware's current inputs (a hash of its files). A target's
+passed on the firmware's current inputs (a hash of its files), or
+proof/<name>.next.json does (check-all --from: a branch's files, which count
+once main has them). A target's
 files are those on its project's main branch (its "ref", in the clone under
 $HIVE_PROJECTS), never the clone's working tree, which may sit on a branch
 not merged: a target whose main files this machine can't read has nothing
@@ -103,13 +105,22 @@ def proven(root: Path, name: str, src: Path | str) -> tuple[list[str], str]:
     so nothing is proven."""
     if isinstance(src, str):
         return [], f"unproven: {src}"
-    p = root / "proof" / f"{name}.json"
-    if not p.is_file():
+    recs = [json.loads(p.read_text(encoding="utf-8")) for p in proof_files(root, name) if p.is_file()]
+    if not recs:
         return [], "no proof (fw check-all)"
-    rec = json.loads(p.read_text(encoding="utf-8"))
-    if rec.get("inputs") != inputs_hash(src):
+    h = inputs_hash(src)
+    rec = next((r for r in recs if r.get("inputs") == h), None)
+    if rec is None:
         return [], "proof is stale: the files changed since (fw check-all)"
     return [s for s in STAGES if rec.get("stages", {}).get(s) == "pass"], ""
+
+
+def proof_files(root: Path, name: str) -> list[Path]:
+    """proof/<name>.json, made on main's files, and proof/<name>.next.json,
+    made with check-all --from on a branch not merged yet: whichever was
+    made on main's current files counts, so a proof made ahead takes over
+    the moment its branch merges."""
+    return [root / "proof" / f"{name}.json", root / "proof" / f"{name}.next.json"]
 
 
 def score(root: Path = ROOT, out=sys.stdout) -> float:

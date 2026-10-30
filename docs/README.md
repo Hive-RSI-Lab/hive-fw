@@ -195,7 +195,9 @@ work on.
     the DAC's I2S0 nor the sub's I2S1 starts there.
 
   `--from DIR` checks one target from another place, such as a branch that
-  hasn't merged; its proof counts once main has the same files. Each firmware is copied to a work dir and run through
+  hasn't merged. It writes `proof/<name>.next.json` beside the proof of
+  main's files, and the score counts whichever of the two was made on main's
+  current files, so a proof made ahead takes over when its branch merges. Each firmware is copied to a work dir and run through
   `fw build`, `fw host-test` and `fw qemu` (with `fw build --qemu` first when
   it has QEMU-only config). A target's pins in targets.json fill in what its
   own `fw.json` lacks, and its IDF tree is kept in

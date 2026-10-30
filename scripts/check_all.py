@@ -5,8 +5,9 @@
 The firmware are examples/<name>/ and the targets in targets.json (real
 products in other Hive projects, read from their main branch in the clone
 under $HIVE_PROJECTS, as `fw score` reads them; --from DIR reads a single
-named target from DIR instead, say a branch not yet merged, whose proof
-counts once main has the same files). Each is
+named target from DIR instead, say a branch not yet merged, and writes
+proof/<name>.next.json, which counts once main has the same files, beside
+the proof of main's own). Each is
 copied to a work dir and run through `fw build`, `fw host-test` and `fw qemu`
 (after `fw build --qemu` when its pins give QEMU its own sdkconfig). Then
 proof/<name>.json records each stage's verdict, the IDF it ran with, and a
@@ -111,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
             bad += 1
             continue
         rec = check(n, src, tg[n].get("pins", {}) if n in tg else None, a.keep)
-        (ROOT / "proof" / f"{n}.json").write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
+        out = ROOT / "proof" / f"{n}{'.next' if a.src else ''}.json"
+        out.write_text(json.dumps(rec, indent=2) + "\n", encoding="utf-8")
         bad += sum(v != "pass" for v in rec["stages"].values())
     tmp.cleanup()
     return 1 if bad else 0
