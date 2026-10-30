@@ -371,6 +371,158 @@
      "replace": "\t\t\t(name \"+3V3\")\n\t\t\t(class \"Default\")\n\t\t\t(node\n\t\t\t\t(ref \"U7\")\n\t\t\t\t(pin \"26\")\n\t\t\t\t(pinfunction \"CE_26\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n"
     }
    ]
+  },
+  {
+   "id": "psram-80m-flash-40m",
+   "expect": "CLOCK-SPI",
+   "site": "CONFIG_ESPTOOLPY_FLASHFREQ",
+   "about": "flash dropped to 40 MHz (a 'safer' flash setting) while the PSRAM stays at 80 MHz: the IDF's PSRAM driver won't build",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y",
+     "replace": "# CONFIG_ESPTOOLPY_FLASHFREQ_80M is not set"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "# CONFIG_ESPTOOLPY_FLASHFREQ_40M is not set",
+     "replace": "CONFIG_ESPTOOLPY_FLASHFREQ_40M=y"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESPTOOLPY_FLASHFREQ=\"80m\"",
+     "replace": "CONFIG_ESPTOOLPY_FLASHFREQ=\"40m\""
+    }
+   ]
+  },
+  {
+   "id": "xtal-26mhz-on-module",
+   "expect": "CLOCK-XTAL",
+   "site": "CONFIG_ESP32_XTAL_FREQ",
+   "about": "the firmware built for a 26 MHz crystal on a WROVER, whose crystal is 40 MHz",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_XTAL_FREQ_40=y",
+     "replace": "# CONFIG_ESP32_XTAL_FREQ_40 is not set"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "# CONFIG_ESP32_XTAL_FREQ_26 is not set",
+     "replace": "CONFIG_ESP32_XTAL_FREQ_26=y"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_ESP32_XTAL_FREQ=40",
+     "replace": "CONFIG_ESP32_XTAL_FREQ=26"
+    }
+   ]
+  },
+  {
+   "id": "sda-pullup-missing",
+   "expect": "I2C-PULLUP",
+   "site": "I2C_SDA",
+   "about": "the I2C SDA pull-up R23 left off (its 3.3 V end unconnected), counting on the ESP32's internal pull",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R23\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    }
+   ]
+  },
+  {
+   "id": "volup-button-floats",
+   "expect": "PIN-FLOAT",
+   "site": "button VOLUP",
+   "about": "the volume-up button's pull-up R61 left off while the firmware sets \"pull\":false",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"R61\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    }
+   ]
+  },
+  {
+   "id": "nvs-renamed",
+   "expect": "PART-NVS",
+   "site": "nvs",
+   "about": "the default NVS partition renamed config: nvs_flash_init() finds no nvs and Wi-Fi/Bluetooth don't start",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "nvs,      data, nvs,     0x9000,",
+     "replace": "config,   data, nvs,     0x9000,"
+    }
+   ]
+  },
+  {
+   "id": "otadata-one-sector",
+   "expect": "PART-OTADATA",
+   "site": "otadata",
+   "about": "otadata cut to one 4 KB sector",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/partitions.csv",
+     "find": "otadata,  data, ota,     0xD000,   0x2000,",
+     "replace": "otadata,  data, ota,     0xD000,   0x1000,"
+    }
+   ]
+  },
+  {
+   "id": "bt-controller-ble-only",
+   "expect": "BT-CLASSIC",
+   "site": "CONFIG_BTDM_CTRL_MODE",
+   "about": "the Bluetooth controller set to BLE only while the firmware is an A2DP sink",
+   "edits": [
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "# CONFIG_BTDM_CTRL_MODE_BLE_ONLY is not set",
+     "replace": "CONFIG_BTDM_CTRL_MODE_BLE_ONLY=y"
+    },
+    {
+     "file": "firmware/board/lite-main/sdkconfig.defaults",
+     "find": "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y",
+     "replace": "# CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY is not set"
+    }
+   ]
+  },
+  {
+   "id": "en-without-cap",
+   "expect": "POWER-EN",
+   "site": "EN (C22)",
+   "about": "the EN reset capacitor C22 left off, so EN rises with the 3.3 V rail",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\t\t\t(node\n\t\t\t\t(ref \"C22\")\n\t\t\t\t(pin \"1\")\n\t\t\t\t(pintype \"passive\")\n\t\t\t)\n",
+     "replace": ""
+    }
+   ]
+  },
+  {
+   "id": "uart0-tx-to-tx",
+   "expect": "UART0",
+   "site": "U0TXD/U0RXD",
+   "about": "the CH340's TXD and RXD swapped: the ESP32's TX meets the CH340's TX",
+   "edits": [
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"TXD_2\"",
+     "replace": "SWAP"
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "\"RXD_3\"",
+     "replace": "\"TXD_2\""
+    },
+    {
+     "file": "boards/lite-main/kicad/lite-main.net",
+     "find": "SWAP",
+     "replace": "\"RXD_3\""
+    }
+   ]
   }
  ]
 }

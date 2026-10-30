@@ -233,14 +233,15 @@ class Expander(unittest.TestCase):
     NET = """(export (version "E")
   (components
     (comp (ref "U1") (value "ESP32-WROVER-E-N8R8") (footprint "RF_Module:ESP32-WROVER-E"))
-    (comp (ref "U2") (value "TCA9539") (footprint "TSSOP-24")))
+    (comp (ref "U2") (value "TCA9539") (footprint "TSSOP-24"))
+    (comp (ref "R1") (value "2.2k")))
   (nets
-    (net (code "1") (name "/I2C_SDA") (node (ref "U1") (pin "16") (pinfunction "IO13")))
+    (net (code "1") (name "/I2C_SDA") (node (ref "U1") (pin "16") (pinfunction "IO13")) (node (ref "R1") (pin "2")))
     (net (code "2") (name "/AMP_RST") (node (ref "U2") (pin "4") (pinfunction "P00_4")))
     (net (code "3") (name "/PVDD_EN") (node (ref "U2") (pin "5") (pinfunction "P01_5")))
     (net (code "4") (name "/AMP_FAULT") (node (ref "U2") (pin "13") (pinfunction "P10_13")))
     (net (code "5") (name "GND") (node (ref "U2") (pin "2") (pinfunction "A1_2")))
-    (net (code "6") (name "+3V3") (node (ref "U2") (pin "21") (pinfunction "A0_21")))))
+    (net (code "6") (name "+3V3") (node (ref "U2") (pin "21") (pinfunction "A0_21")) (node (ref "R1") (pin "1")))))
 """
     H = ("#define I2C_SDA 13\n#define EXP_ADDRS {0x74, 0x75}\n#define EXP_REG_IN0 0x00\n"
          "#define EXP_AMP_RST 0\n#define EXP_PVDD_EN 1\n#define EXP_AMP_FAULT 8 /* low = fault */\n"
@@ -288,15 +289,16 @@ class AudioPath(unittest.TestCase):
   (components
     (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
     (comp (ref "U2") (value "ES8388"))
-    (comp (ref "U3") (value "{exp}")))
+    (comp (ref "U3") (value "{exp}"))
+    (comp (ref "R1") (value "2.2k")) (comp (ref "R2") (value "2.2k")))
   (nets
     (net (code "1") (name "/I2S_MCLK") (node (ref "U1") (pin "25") (pinfunction "{mck_pin}")) (node (ref "U2") (pin "1") (pinfunction "MCLK_1")))
     (net (code "2") (name "/I2S_DOUT") (node (ref "U1") (pin "11") (pinfunction "IO26")) (node (ref "U2") (pin "6") (pinfunction "{codec_in}")))
     (net (code "3") (name "/I2S_DIN") (node (ref "U1") (pin "7") (pinfunction "IO35")) (node (ref "U2") (pin "8") (pinfunction "ASDOUT_8")))
-    (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")))
-    (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")))
+    (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")) (node (ref "R1") (pin "2")))
+    (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")) (node (ref "R2") (pin "2")))
     (net (code "6") (name "GND") (node (ref "U2") (pin "26") (pinfunction "{ce}")) (node (ref "U3") (pin "21") (pinfunction "A0")) (node (ref "U3") (pin "2") (pinfunction "A1")) (node (ref "U3") (pin "3") (pinfunction "A2")))
-    (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")))))
+    (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")) (node (ref "R1") (pin "1")) (node (ref "R2") (pin "1")))))
 """
 
     def problems(self, mck=0, h="#define ES8388_ADDR 0x10\n", **net):
@@ -338,6 +340,11 @@ class AudioPath(unittest.TestCase):
         net = self.NET.replace('(pinfunction "DVDD")', '(pinfunction "CE_26")')  # CE high: 0x11
         got = self.problems_on(net.format(exp="PCA9539", mck_pin="IO0", codec_in="DSDIN_6", ce="x"))
         self.assertEqual(got, ["I2C-ADDR: the firmware talks to ES8388 at 0x10, but U2 ES8388's address straps put it at 0x11"])
+
+    def test_an_8_bit_address(self):
+        got = self.problems(h="#define ES8388_ADDR 0x20\n")  # the datasheet's write address, not the 7-bit 0x10
+        self.assertIn("I2C-ADDR: ES8388 at 0x20, but a ES8388 answers only at 0x10 or 0x11: 0x20 is its 8-bit "
+                      "(write) address, the 7-bit one shifted left", got)
 
     def problems_on(self, net):
         p = Path(tempfile.mkdtemp())
@@ -390,6 +397,71 @@ class Partitions(unittest.TestCase):
         res = constraints.build_report(p, {"target": "esp32"}, {"sources": []}, None)
         self.assertEqual([x["code"] for x in res["problems"]], ["SPIRAM-OFF"])
         self.assertFalse(res["module"]["psram"])
+
+
+class Mistakes(unittest.TestCase):
+    """The clock, bus, partition, power and serial-port mistakes: each check
+    quiet on a good board and firmware, and each firing on its mistake."""
+    NET = """(export (version "E")
+  (components
+    (comp (ref "U1") (value "ESP32-WROVER-E-N8R8"))
+    (comp (ref "U2") (value "CH340C"))
+    (comp (ref "R1") (value "10k")) (comp (ref "C1") (value "1uF"))
+    (comp (ref "R2") (value "2.2k")) (comp (ref "R3") (value "10k")))
+  (nets
+    (net (code "1") (name "/EN") (node (ref "U1") (pin "3") (pinfunction "EN")) (node (ref "R1") (pin "2"))
+      (node (ref "C1") (pin "1")))
+    (net (code "2") (name "+3V3") (node (ref "R1") (pin "1")) (node (ref "R2") (pin "1")) (node (ref "R3") (pin "1")))
+    (net (code "3") (name "GND") (node (ref "C1") (pin "2")))
+    (net (code "4") (name "/U0TXD") (node (ref "U1") (pin "35") (pinfunction "TXD0")) (node (ref "U2") (pin "3") (pinfunction "RXD")))
+    (net (code "5") (name "/U0RXD") (node (ref "U1") (pin "34") (pinfunction "RXD0")) (node (ref "U2") (pin "2") (pinfunction "TXD")))
+    (net (code "6") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "R2") (pin "2")))
+    (net (code "7") (name "/BTN_VOLUP") (node (ref "U1") (pin "16") (pinfunction "IO13")) (node (ref "R3") (pin "2")))
+    (net (code "8") (name "/I2S_MCLK") (node (ref "U1") (pin "25") (pinfunction "IO0")))))
+"""
+    SDK = SDK + "CONFIG_ESPTOOLPY_FLASHFREQ_80M=y\nCONFIG_SPIRAM_SPEED_80M=y\nCONFIG_BT_CLASSIC_ENABLED=y\n" \
+        "CONFIG_BTDM_CTRL_MODE_BR_EDR_ONLY=y\n"
+    SRC = ('#define I2C_SDA 33\n#define ES8388_ADDR 0x10\n'
+           '#define DAC "model=ES8388,i2c=16,mck=0"\n'
+           '#define BTN "[{\\"gpio\\":13,\\"pull\\":false,\\"normal\\":{\\"pressed\\":\\"ACTRLS_VOLUP\\"}}]"\n')
+
+    def codes(self, net=None, sdk=None, src=None, parts=None):
+        p = Path(tempfile.mkdtemp())
+        (p / "sdkconfig").write_text(sdk or self.SDK)
+        (p / "parts.csv").write_text(parts or PARTS)
+        (p / "board.h").write_text(src or self.SRC)
+        (p / "b.net").write_text(net or self.NET)
+        res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net",
+                                                                "nets": {"BTN": "BTN_VOLUP", "DAC": "I2S_MCLK"}})
+        return sorted({x["code"] for x in res["problems"]})
+
+    def test_a_good_board_and_firmware(self):
+        self.assertEqual(self.codes(), [])
+
+    def test_firmware_mistakes(self):
+        self.assertEqual(self.codes(sdk=self.SDK.replace("FLASHFREQ_80M", "FLASHFREQ_40M")), ["CLOCK-SPI"])
+        self.assertEqual(self.codes(sdk=self.SDK.replace("CONFIG_ESP32_XTAL_FREQ_40", "CONFIG_ESP32_XTAL_FREQ_26")),
+                         ["CLOCK-XTAL"])
+        self.assertEqual(self.codes(sdk=self.SDK.replace("BR_EDR_ONLY", "BLE_ONLY")), ["BT-CLASSIC"])
+        self.assertEqual(self.codes(src=self.SRC.replace("0x10", "0x20")), ["I2C-ADDR"])
+        self.assertEqual(self.codes(src=self.SRC.replace("i2c=16", "i2c=26")), ["I2C-ADDR"])
+        self.assertIn("I2S-MCLK", self.codes(src=self.SRC.replace("mck=0", "mck=5")))
+        self.assertEqual(self.codes(parts=PARTS.replace("nvs,", "cfg,")), ["PART-NVS"])
+        self.assertEqual(self.codes(parts=PARTS.replace("0x4000", "0x2000")), ["PART-NVS"])
+        self.assertEqual(self.codes(parts=PARTS.replace("0x2000", "0x1000")), ["PART-OTADATA"])
+
+    def test_board_mistakes(self):
+        drop = lambda ref, pin: self.NET.replace(f'(node (ref "{ref}") (pin "{pin}"))', "")  # noqa: E731
+        self.assertEqual(self.codes(drop("C1", "2")), ["POWER-EN"])
+        self.assertEqual(self.codes(drop("R1", "1")), ["POWER-EN"])
+        self.assertEqual(self.codes(drop("R2", "1")), ["I2C-PULLUP"])
+        self.assertEqual(self.codes(drop("R3", "1")), ["PIN-FLOAT"])
+        self.assertEqual(self.codes(self.NET.replace('(pinfunction "RXD")', '(pinfunction "TXD_X")')
+                                    .replace('(pinfunction "TXD")', '(pinfunction "RXD")')
+                                    .replace("TXD_X", "TXD")), ["UART0"])
+        self.assertEqual(self.codes(self.NET.replace('(node (ref "U2") (pin "3") (pinfunction "RXD"))', "")), ["UART0"])
+        # the internal pull is enough for a button on an ordinary pin
+        self.assertEqual(self.codes(drop("R3", "1"), src=self.SRC.replace("false", "true")), [])
 
 
 if __name__ == "__main__":
