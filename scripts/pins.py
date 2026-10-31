@@ -489,11 +489,17 @@ def firmware_pins(project: Path, globs: list[str], when=None) -> list[dict]:
         if 0 <= g <= 48:
             out.append({"gpio": g, "name": name, "where": where})
 
-    for where, line in source_lines(project, globs):
+    # FRONT_ADDR 0x27 makes FRONT_* the I2C device's own names: its bits aren't GPIOs
+    sources = list(source_lines(project, globs))
+    device_prefixes = tuple(sorted({m.group(1) + "_" for _, line in sources
+                                    if (m := re.match(r"\s*#\s*define\s+(\w+?)_ADDR\w*\s+\(?\s*0x[0-9a-fA-F]+", line))}))
+    for where, line in sources:
         cond = cond_of(line)
         if cond and not cond_holds(cond, when):
             continue
         m = re.match(r"\s*#\s*define\s+(\w+)\s+\(?\s*(?:GPIO_NUM_)?(\d+)\s*\)?\s*(?:/[/*].*)?$", line)
+        if m and m.group(1).startswith(device_prefixes):
+            continue  # a bit of an I2C device (an I/O expander), not a GPIO
         if m and (set(m.group(1).upper().split("_")) & ({"PIN", "GPIO", "IO"} | SIGNALS)):
             add(int(m.group(2)), m.group(1), where)
             continue
@@ -542,6 +548,10 @@ def tokens(name: str) -> set[str]:
 
 
 def match(name: str, net: str | None) -> int:
+    if net and name.lower() == "clk":
+        # a bare squeezelite clk= is an SPI clock: a serial-clock net beats ETH_CLK and the like
+        t = tokens(net)
+        return 2 if t & {"BCLK", "SCK"} else len(t & {"CLK"})
     return len(tokens(name) & tokens(net)) if net else 0
 
 
