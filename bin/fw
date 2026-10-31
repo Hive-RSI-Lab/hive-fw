@@ -18,6 +18,8 @@
 #                             board, and what it or the board gets wrong (CODE:
 #                             problem lines; hwde reads it; fw score scores it)
 #   fw pins [PROJECT] [--board F]   just its pin map against the board's netlist
+#   fw stm32 setup|doctor|build|pins   STM32 (arm-none-eabi): pinned xPack toolchain,
+#                             make, the pin header against the chip and board pinmap
 #   fw test                   this module's own tests (the per-change test)
 #   fw check-all              build, host-test and boot every firmware (slow)
 #   fw score                  planted firmware faults fw constraints catches (the score)
@@ -41,12 +43,13 @@ bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
 check-all) exec "$py" "$s/check_all.py" "$@" ;;
 constraints) exec "$py" "$s/constraints.py" "$@" ;;
 pins) exec "$py" "$s/pins.py" "$@" ;;
+stm32) exec "$py" "$s/stm32.py" "$@" ;;
 score) exec "$py" "$s/score.py" "$@" ;;
 test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2
