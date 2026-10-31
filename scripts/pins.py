@@ -13,6 +13,8 @@ the firmware never touches are listed as notes.
 
 Where to look comes from the project's fw.json, or from targets.json for a
 target (--target, with PROJECT its files, default the target's own dir):
+its "pinmap", else what fw constraints' "constraints" says of the same keys
+(board, sources, when, ref, nets, ignore, sdkconfig):
 
     "pinmap": {"board": "../boards/x/kicad/x.kicad_sch",   (or a list; paths
                                                             from PROJECT)
@@ -634,17 +636,27 @@ def check(project: Path, cfg: dict) -> dict:
     return res
 
 
+SHARED = ("board", "sources", "when", "ref", "nets", "ignore", "sdkconfig")
+
+
 def config(project: Path, target: str | None) -> dict:
+    """Where to look: a target's pins, then the project's fw.json over them.
+    In each, "constraints" (fw constraints' config) gives the keys the two
+    share (SHARED) and "pinmap" wins over it, so a project that only says
+    "constraints" can run fw pins alone (hwde's side does)."""
+    srcs = []
     if target:
         t = check_all.targets().get(target)
         if t is None:
             raise SystemExit(f"fw pins: no target {target} in targets.json")
-        cfg = dict(t.get("pins", {}).get("pinmap") or {})
-    else:
-        cfg = {}
+        srcs.append(t.get("pins", {}))
     f = project / "fw.json"
     if f.is_file():
-        cfg.update(json.loads(f.read_text(encoding="utf-8")).get("pinmap") or {})
+        srcs.append(json.loads(f.read_text(encoding="utf-8")))
+    cfg = {}
+    for src in srcs:
+        cfg.update({k: v for k, v in (src.get("constraints") or {}).items() if k in SHARED})
+        cfg.update(src.get("pinmap") or {})
     return cfg
 
 
