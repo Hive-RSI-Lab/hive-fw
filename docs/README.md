@@ -297,3 +297,17 @@ false verdict in `bootlog.FATAL`, a step setup misses. Add a test for it. A
 bigger fix gets its own brief (`hive agent brief --project hive-fw ...`).
 Don't work around fw in your own project without saying so in your account.
 What the first real user needed is in [first-user.md](first-user.md).
+
+## STM32 (arm-none-eabi)
+
+For a bare-metal STM32 project (no IDF): `fw stm32 setup` installs the pinned
+xPack arm-none-eabi-gcc (sha256 checked) under the same roots as the IDF;
+`fw stm32 doctor` shows what is found; `fw stm32 build` runs `make` with
+`ARM_PREFIX=<bin>/arm-none-eabi-` (the Makefile should use `$(ARM_PREFIX)gcc`);
+`fw host-test` runs the project's host unit tests as for any project;
+`fw stm32 pins` checks the pin header against the chip's pin table
+(`data/stm32g474_lqfp64.json`, DS12288 Rev 6, parsed from the PDF by word
+position, since pdftotext loses the table) and the board's pinmap.json. Its
+fw.json section is described in `scripts/stm32.py`. Flash with `dfu-util` on
+the ROM DFU (0483:df11); a blank chip needs BOOT0 high (AN2606). st.com
+refuses sandbox downloads; web.archive.org copies of its PDFs work.
