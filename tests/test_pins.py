@@ -194,5 +194,37 @@ class Check(Fixture):
             self.assertEqual(pins.main([str(self.fw), "--board", str(self.d / "nope.net")]), 2)
 
 
+    def test_a_constraints_only_fw_json_runs_alone(self):
+        # hwde's side runs fw pins on a project whose fw.json says only "constraints"
+        cons = dict(self.cfg, partitions="partitions.csv", images="sizes.json")
+        (self.fw / "fw.json").write_text(json.dumps({"constraints": cons}))
+        self.assertEqual(pins.config(self.fw, None), self.cfg)
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            self.assertEqual(pins.main([str(self.fw)]), 0)
+        self.assertIn("pins: pass", out.getvalue())
+        # pinmap still wins where both say a key
+        (self.fw / "fw.json").write_text(json.dumps({"constraints": cons, "pinmap": {"board": "elsewhere.net"}}))
+        self.assertEqual(pins.config(self.fw, None)["board"], "elsewhere.net")
+
+    def test_the_corpus_bases_pass_and_a_planted_pin_fault_fails_alone(self):
+        import shutil
+        root = Path(__file__).resolve().parent.parent / "faults"
+        for base in ("lite", "core"):
+            with mock.patch("sys.stdout", io.StringIO()) as out:
+                self.assertEqual(pins.main([str(root / base)]), 0, out.getvalue())
+        fault = next(f for f in json.loads((root / "core" / "faults.json").read_text())["faults"]
+                     if f["expect"] == "PIN-NET")
+        work = self.d / "core"
+        shutil.copytree(root / "core", work)
+        for e in fault["edits"]:
+            f = work / e["file"]
+            text = f.read_text()
+            self.assertEqual(text.count(e["find"]), 1)
+            f.write_text(text.replace(e["find"], e["replace"]))
+        with mock.patch("sys.stdout", io.StringIO()) as out:
+            self.assertEqual(pins.main([str(work)]), 1)
+        self.assertIn(fault["site"], out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
