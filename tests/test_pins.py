@@ -68,6 +68,14 @@ class Firmware(Fixture):
                                (13, "ACTRLS_VOLUP"), (36, "ACTRLS_VOLDOWN"), (14, "ir")})
         # not I2C_PORT, ES8388_ADDR, i2c=16 (an address), or SQUEEZEAMP's context line
 
+    def test_an_i2c_devices_bits_are_not_gpios(self):
+        (self.fw / "front.h").write_text("#define FRONT_ADDR 0x27\n#define FRONT_LED_R 9 /* P11 */\n#define FRONT_LED_PIN 10\n")
+        got = {p["name"] for p in pins.firmware_pins(self.fw, ["front.h"])}
+        self.assertEqual(got, set())
+
+    def test_a_bare_clk_is_an_spi_clock_not_the_ethernet_one(self):
+        self.assertGreater(pins.match("clk", "LCD_SCLK"), pins.match("clk", "ETH_CLK"))
+
     def test_when_keeps_one_boards_kconfig_defaults(self):
         (self.fw / "hooks.patch").write_text(PATCH + '+\t\t\tdefault "model=I2S,bck=2,ws=4" if HIFI_PLUS || HIFI_ULTRA\n')
         names = lambda when: {(p["gpio"], p["name"]) for p in pins.firmware_pins(self.fw, ["*.patch"], when)}
