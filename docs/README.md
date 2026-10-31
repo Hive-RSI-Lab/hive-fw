@@ -85,6 +85,7 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
 | `fw pins [P] [--board F]` | Just the pin map against the board's KiCad netlist (`.net`, `.kicad_sch`, `.kicad_pcb`): the part of `fw constraints` hwde's side runs alone. |
+| `fw dts [P] [--dts F] [--board F] [--ref U]` | A Linux board's device tree pin mux against the KiCad netlist: each i.MX `fsl,pins` pad (and STM32 / sunxi / Rockchip pinctrl pads) is on the SoC, connected, and carries the net its function names (PAD-NONE, PAD-NC, PAD-NET). Config: fw.json `"dts"` (scripts/dts.py). |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
 (`FW_JOBS`), because the machine is shared. Raise `FW_JOBS` when it's
