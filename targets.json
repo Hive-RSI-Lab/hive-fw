@@ -130,5 +130,17 @@
       "constraints": {"sdkconfig": "sdkconfig.defaults", "partitions": "partitions.csv", "sources": ["main/pins.h"],
                       "board": "../../boards/flex-link/kicad/flex-link.net"}
     }
+  },
+  "emc-ref": {
+    "project": "hw-lab",
+    "path": "firmware/emc-ref",
+    "about": "hw-lab's emc-ref (EMC reference coupons: two bucks, LC filter, biased bead, comb, clock traces, stitched cavities) controller on the ESP32-S3-MINI-1-N8: UART0 protocol through a CH340C and an isolator, timed bead bias, NTC stops, quiet mode with held outputs. Its own fw.json holds the build, host-test and QEMU pins; these name the board for hwde check_fw.",
+    "pins": {
+      "idf": "v5.5.6",
+      "target": "esp32s3",
+      "host_tests": "test/host",
+      "constraints": {"sdkconfig": "sdkconfig.defaults", "sources": ["main/pins.h"],
+                      "board": "../../boards/emc-ref/kicad/emc-ref.net"}
+    }
   }
 }
