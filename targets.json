@@ -118,5 +118,17 @@
       "constraints": {"sdkconfig": "sdkconfig.defaults", "sources": ["main/board_pins.h"],
                       "board": "../../boards/precision-daq/kicad/precision-daq.net"}
     }
+  },
+  "flex-link": {
+    "project": "hw-lab",
+    "path": "firmware/flex-link",
+    "about": "hw-lab's flex-link (rigid-flex crack monitor) firmware on the ESP32-S3-MINI-1-N8: ADS1220 canary loops, two LSM6DSOX, SPI2 PRBS loopback, bend campaign, signed MQTT remote with OTA rollback. Its own fw.json holds the build, host-test and QEMU pins; these name the board for hwde check_fw.",
+    "pins": {
+      "idf": "v5.5.6",
+      "target": "esp32s3",
+      "host_tests": "test/host",
+      "constraints": {"sdkconfig": "sdkconfig.defaults", "partitions": "partitions.csv", "sources": ["main/pins.h"],
+                      "board": "../../boards/flex-link/kicad/flex-link.net"}
+    }
   }
 }
