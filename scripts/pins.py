@@ -81,11 +81,25 @@ FLASH = {6, 7, 8, 9, 10, 11}
 CONSOLE = {1, 3}  # UART0: the IDF's console and the flasher
 PSRAM = {16, 17}  # a WROVER's PSRAM; free on a WROOM
 STRAPPING = {0, 2, 5, 12, 15}
+# The newer chips put UART0 and their strapping pins elsewhere (each chip's
+# datasheet, "Strapping Pins" and the IO MUX table): an S3 module's TXD0/RXD0
+# pins are GPIO43/44, not the classic ESP32's GPIO1/3.
+CHIP_UART0 = {"S2": {"TXD0": 43, "RXD0": 44}, "S3": {"TXD0": 43, "RXD0": 44},
+              "C3": {"TXD0": 21, "RXD0": 20}, "C6": {"TXD0": 16, "RXD0": 17}}
+CHIP_STRAPPING = {"classic": STRAPPING, "S2": {0, 45, 46}, "S3": {0, 3, 45, 46},
+                  "C3": {2, 8, 9}, "C6": {8, 9, 15}}
 
 
-def gpio_of(pinfunction: str) -> int | None:
+def chip_of(*names: str) -> str:
+    """'classic' (ESP32), or 'S2'/'S3'/'C3'/'C6'/... from a part or footprint name."""
+    m = re.search(r"ESP32-?((?:S|C|H|P)\d)", " ".join(names).upper())
+    return m.group(1) if m else "classic"
+
+
+def gpio_of(pinfunction: str, chip: str = "classic") -> int | None:
     """GPIO from a symbol's pin name: IO23, GPIO23, IO23_37 (EasyEDA's pin
-    number suffix), IO0/BOOT, SENSOR_VP, U0TXD; None for power and NC."""
+    number suffix), IO0/BOOT, SENSOR_VP, U0TXD; None for power and NC.
+    chip ('classic', 'S3', ...) picks which GPIO a UART0 pin name means."""
     for part in re.split(r"[/,]", pinfunction.upper()):
         part = part.strip()
         m = re.match(r"^(?:GPIO|IO)(\d+)(?:_\d+)?$", part)
@@ -93,6 +107,14 @@ def gpio_of(pinfunction: str) -> int | None:
             return int(m.group(1))
         base = re.sub(r"_\d+$", "", part)
         for name in (part, base):
+            if chip != "classic":
+                uart = CHIP_UART0.get(chip, {})
+                key = {"U0TXD": "TXD0", "TXD": "TXD0", "U0RXD": "RXD0", "RXD": "RXD0"}.get(name, name)
+                if key in uart:
+                    return uart[key]
+                if key in ("TXD0", "RXD0"):
+                    return None   # a chip we have no table for: don't guess GPIO1/3
+                continue          # the classic ESP32's other pad names don't apply
             if name in CHIP_NAMES:
                 return CHIP_NAMES[name]
     return None
@@ -189,7 +211,7 @@ def from_netlist(path: Path, text: str, want_ref: str | None) -> list[Board]:
                 value, fp = comps.get(ref, ("", ""))
                 if (want_ref and ref != want_ref) or (not want_ref and not is_esp32(value, fp)):
                     continue
-                g = gpio_of(val(node, "pinfunction"))
+                g = gpio_of(val(node, "pinfunction"), chip_of(value, fp))
                 if g is None:
                     fn = re.sub(r"_\d+$", "", val(node, "pinfunction").upper())
                     if fn:
@@ -248,7 +270,7 @@ def from_layout(path: Path, text: str, want_ref: str | None) -> list[Board]:
         for pad in kids(fp, "pad"):
             num = pad[1] if len(pad) > 1 else ""
             fn = val(pad, "pinfunction")
-            g = gpio_of(fn) if fn else (MODULE_PADS.get(int(num)) if table and num.isdigit() else None)
+            g = gpio_of(fn, chip_of(value, name)) if fn else (MODULE_PADS.get(int(num)) if table and num.isdigit() else None)
             if g is None:
                 continue
             net = kids(pad, "net")
@@ -589,7 +611,9 @@ def check(project: Path, cfg: dict) -> dict:
             return res
         esp = found[0]
         # the flash and PSRAM pins below are the ESP32's; an S2/S3/C3's differ
-        classic = not re.search(r"ESP32-?(S\d|C\d|H\d|P\d)", esp.part.upper())
+        chip = chip_of(esp.part)
+        classic = chip == "classic"
+        strapping = CHIP_STRAPPING.get(chip, set())
         flash = FLASH if classic else set()
         rows = []
         used = set()
@@ -622,13 +646,14 @@ def check(project: Path, cfg: dict) -> dict:
                     alt = [x for x, s in scores.items() if s == best]
                     row["verdict"] = "fail"
                     row["why"] = "the board has " + ", ".join(f"{esp.gpios[x]} on GPIO{x}" for x in sorted(alt))
-            if row["verdict"] == "pass" and g in STRAPPING:
+            if row["verdict"] == "pass" and g in strapping:
                 row["why"] = f"GPIO{g} is a strapping pin"
             used.add(g)
             ok &= row["verdict"] == "pass"
             rows.append(row)
         unused = {g: n for g, n in sorted(esp.gpios.items())
-                  if n and g not in used and g not in FLASH | CONSOLE and n not in ignore
+                  if n and g not in used and g not in ((FLASH | CONSOLE) if classic else set())
+                  and n not in ignore
                   and not re.fullmatch(r"(?:GND|\+?3V3|VCC|VDD.*)", n)}
         res["boards"].append({"file": str(path), "read": note, "ref": esp.ref, "part": esp.part,
                               "pins": rows, "unused": unused})

@@ -118,6 +118,28 @@ class Board(Fixture):
                       ("U0TXD", 1), ("RXD0_34", 3), ("3V3_2", None), ("NC_17", None)):
             self.assertEqual(pins.gpio_of(fn), g, fn)
 
+    def test_s3_uart_and_strapping_pins(self):
+        # hw-lab emc-lab: an ESP32-S3-MINI-1 whose TXD0 pad is unconnected and
+        # whose GPIO1 carries an ADC net; GPIO2/5/12/15 are not S3 straps
+        self.assertEqual(pins.chip_of("ESP32-S3-MINI-1-N8"), "S3")
+        self.assertEqual(pins.chip_of("ESP32-WROVER-E"), "classic")
+        self.assertEqual(pins.gpio_of("TXD0_39", "S3"), 43)
+        self.assertEqual(pins.gpio_of("RXD0_40", "S3"), 44)
+        self.assertEqual(pins.gpio_of("IO1_5", "S3"), 1)
+        self.assertIsNone(pins.gpio_of("SENSOR_VP", "S3"))
+        s3 = {"5": ("IO1_5", "/MON_ISRC"), "6": ("IO2_6", "/MON_VSRC"), "39": ("TXD0_39", "unconnected-(U5-TXD0-Pad39)"),
+              "16": ("IO12_16", "/K2_ON"), "3": ("3V3_3", "+3V3")}
+        net = netlist(s3).replace("ESP32-WROVER-E-N8R8", "ESP32-S3-MINI-1-N8").replace(
+            "WIFI-SMD_ESP32-WROVER-IE8MB", "BULETM-SMD_ESP32-S3-MINI-1-N8")
+        (self.d / "s3.net").write_text(net)
+        (b,) = pins.read_board(self.d / "s3.net")[0]
+        self.assertEqual(b.gpios[1], "MON_ISRC")
+        self.assertIsNone(b.gpios[43])
+        (self.d / "s3.h").write_text("#define PIN_MON_ISRC 1\n#define PIN_MON_VSRC 2\n#define PIN_K2_ON 12\n")
+        r = pins.check(self.d, {"board": "s3.net", "sources": ["s3.h"]})
+        self.assertTrue(r["ok"], r)
+        self.assertFalse([p for p in r["boards"][0]["pins"] if "strapping" in p["why"]])
+
     def test_netlist(self):
         (b,) = pins.read_board(self.d / "board.net")[0]
         self.assertEqual((b.ref, b.psram), ("U5", True))
