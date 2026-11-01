@@ -106,5 +106,17 @@
                       "when": "HIFI_ULTRA", "board": "../boards/core/kicad/core.net",
                       "ignore": ["EXP_LED"]}
     }
+  },
+  "precision-daq": {
+    "project": "hw-lab",
+    "path": "firmware/precision-daq",
+    "about": "hw-lab's precision-daq (AD7124-8 DAQ) firmware on the ESP32-S3-WROOM-1-N8: the AD7124 layer, sensor maths, selftest T1-T10, USB CDC + TCP JSON stream. Its own fw.json holds the build, host-test and QEMU pins; these name the board for hwde check_fw.",
+    "pins": {
+      "idf": "v5.5.6",
+      "target": "esp32s3",
+      "host_tests": "test",
+      "constraints": {"sdkconfig": "sdkconfig.defaults", "sources": ["main/board_pins.h"],
+                      "board": "../../boards/precision-daq/kicad/precision-daq.net"}
+    }
   }
 }
