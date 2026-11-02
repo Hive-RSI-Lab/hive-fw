@@ -72,7 +72,8 @@ def idf_py(env: dict, project: Path, args: list[str]) -> int:
 def cmd_env(args: list[str]) -> int:
     project, _ = split_project(args)
     env, pins = need_env(project)
-    for k in ("IDF_PATH", "IDF_TOOLS_PATH", "IDF_PYTHON_ENV_PATH", "PATH", "OPENOCD_SCRIPTS", "ESP_ROM_ELF_DIR"):
+    for k in ("IDF_PATH", "IDF_TOOLS_PATH", "IDF_PYTHON_ENV_PATH", "PATH", "OPENOCD_SCRIPTS", "ESP_ROM_ELF_DIR",
+              "PYTHONPATH", *pins.get("env", {})):
         if env.get(k):
             print(f"export {k}={shlex.quote(env[k])}")
     q = fwlib.find_qemu()
