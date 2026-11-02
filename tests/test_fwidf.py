@@ -30,6 +30,16 @@ class Args(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(fwidf.cmd_flash([tempfile.mkdtemp()]), 2)
 
+    def test_env_exports_what_fw_build_gets(self):
+        # A script that evals `fw env` needs fw.json's "python" extras and "env" too.
+        got = {"IDF_PATH": "/i", "PYTHONPATH": "/extra", "HIFI_BOARD": "core", "HOME": "/h"}
+        with mock.patch.object(fwidf, "need_env", return_value=(got, {"env": {"HIFI_BOARD": "core"}})), \
+                mock.patch.object(fwidf.fwlib, "find_qemu", return_value=None), \
+                mock.patch("builtins.print") as out:
+            self.assertEqual(fwidf.cmd_env([tempfile.mkdtemp()]), 0)
+        lines = [c.args[0] for c in out.call_args_list]
+        self.assertEqual(lines, ["export IDF_PATH=/i", "export PYTHONPATH=/extra", "export HIFI_BOARD=core"])
+
 
 class Overlay(unittest.TestCase):
     def test_overlay_replaces_set_and_unset_options(self):
