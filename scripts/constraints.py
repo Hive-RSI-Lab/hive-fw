@@ -133,6 +133,8 @@ I2C_PARTS = [
 # a part's I2S data pins, by name: what it drives, what it reads
 I2S_DATA_OUT = {"SDOUT", "ASDOUT", "ADCDAT", "SDO", "DOUT", "DATA_OUT"}
 I2S_DATA_IN = {"SDIN", "DSDIN", "DACDAT", "SDI", "DIN", "DATA_IN"}
+# a part with one of these is on an I2S bus: an SPI ADC's DIN and DOUT are named the other way round
+I2S_WORD_CLOCK = {"LRCK", "LRCLK", "LRC", "ALRCK", "DLRCK", "ADCLRC", "DACLRC", "WS", "FS", "WCLK"}
 # audio parts' 7-bit I2C addresses (their datasheets; the address pins pick within each set)
 I2C_ADDRS = {
     "ES8388": {0x10, 0x11}, "ES8311": {0x18, 0x19}, "ES8156": {0x08, 0x09}, "ES7210": {0x40, 0x41, 0x42, 0x43},
@@ -351,6 +353,7 @@ def audio_problems(esp, fw_pins: list[dict], i2c: list[dict], target: str, probl
             if mck and g not in MCLK_PINS:
                 problem("I2S-MCLK", "board", f"{', '.join(mck)}'s MCLK is on GPIO{g} ({net}): the ESP32 puts I2S MCLK "
                         "out on GPIO0, 1 or 3 only", path)
+    on_i2s = {r for hits in esp.nets.values() for r, fn in hits if pin_names(fn) & I2S_WORD_CLOCK}
     for p in fw_pins:
         words = pins.tokens(p["name"])
         net = esp.gpios.get(p["gpio"])
@@ -359,7 +362,7 @@ def audio_problems(esp, fw_pins: list[dict], i2c: list[dict], target: str, probl
         bad, side = (I2S_DATA_OUT, "out") if "DOUT" in words else (I2S_DATA_IN, "in")
         for ref, fn in esp.nets.get(net, []):
             hit = pin_names(fn) & bad
-            if ref != esp.ref and hit:
+            if ref != esp.ref and hit and ref in on_i2s:
                 problem("I2S-DIR", "board", f"GPIO{p['gpio']} {p['name']} is the ESP32's I2S data {side}, but {net} goes to "
                         f"{ref} {esp.parts.get(ref, '')}'s {min(hit)}, also an {side}put: data {side} wants the part's data "
                         f"{'in' if side == 'out' else 'out'}", p["where"])

@@ -119,6 +119,17 @@
                       "board": "../../boards/precision-daq/kicad/precision-daq.net"}
     }
   },
+  "electrometer": {
+    "project": "hw-lab",
+    "path": "firmware/electrometer",
+    "about": "hw-lab's electrometer bring-up firmware on the ESP32-S3-WROOM-1-N8: raw ADS1220 codes and rail monitors over the USB console. Its own fw.json holds the build pins; these name the board for hwde check_fw.",
+    "pins": {
+      "idf": "v5.5.6",
+      "target": "esp32s3",
+      "constraints": {"sdkconfig": "sdkconfig.defaults", "sources": ["main/board_pins.h"],
+                      "board": "../../boards/electrometer/kicad/electrometer.net"}
+    }
+  },
   "flex-link": {
     "project": "hw-lab",
     "path": "firmware/flex-link",
