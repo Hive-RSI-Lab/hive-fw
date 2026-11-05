@@ -387,6 +387,7 @@ class AudioPath(unittest.TestCase):
     (net (code "4") (name "/I2C_SDA") (node (ref "U1") (pin "9") (pinfunction "IO33")) (node (ref "U2") (pin "27") (pinfunction "CDATA_27")) (node (ref "U3") (pin "23") (pinfunction "SDA")) (node (ref "R1") (pin "2")))
     (net (code "5") (name "/I2C_SCL") (node (ref "U1") (pin "8") (pinfunction "IO32")) (node (ref "U2") (pin "28") (pinfunction "CCLK_28")) (node (ref "U3") (pin "22") (pinfunction "SCL")) (node (ref "R2") (pin "2")))
     (net (code "6") (name "GND") (node (ref "U2") (pin "26") (pinfunction "{ce}")) (node (ref "U3") (pin "21") (pinfunction "A0")) (node (ref "U3") (pin "2") (pinfunction "A1")) (node (ref "U3") (pin "3") (pinfunction "A2")))
+    (net (code "8") (name "/I2S_WS") (node (ref "U2") (pin "9") (pinfunction "ALRCK_9")))
     (net (code "7") (name "+3V3") (node (ref "U2") (pin "2") (pinfunction "DVDD")) (node (ref "R1") (pin "1")) (node (ref "R2") (pin "1")))))
 """
 
@@ -411,6 +412,16 @@ class AudioPath(unittest.TestCase):
         got = self.problems(codec_in="ASDOUT_6")
         self.assertEqual(len(got), 1)
         self.assertIn("I2S-DIR: GPIO26 PIN_I2S_DOUT is the ESP32's I2S data out, but I2S_DOUT goes to U2 ES8388's ASDOUT", got[0])
+
+    def test_spi_part_with_din_and_dout_is_not_i2s(self):
+        # an ADS1220: its DOUT on the ESP32's MISO, no word clock anywhere on the part
+        p = Path(tempfile.mkdtemp())
+        (p / "board.h").write_text("#define ES8388_ADDR 0x10\n#define PIN_I2S_MCLK 0\n#define PIN_ADC_DOUT 26\n")
+        for pin, want in (("DRDY_9", 0), ("ALRCK_9", 1)):  # the same wiring on a part with a word clock still trips
+            net = self.NET.replace("ALRCK_9", pin).replace("/I2S_DOUT", "/ADC_DOUT")
+            (p / "b.net").write_text(net.format(exp="PCA9539", mck_pin="IO0", codec_in="DOUT_6", ce="CE_26"))
+            res = constraints.build_report(p, {"target": "esp32"}, {"sources": ["*.h"], "board": "b.net"})
+            self.assertEqual(len([x for x in res["problems"] if x["code"] == "I2S-DIR"]), want)
 
     def test_two_parts_at_one_address(self):
         got = self.problems(exp="PCF8574")  # 0x20 with A2..A0 low; the ES8388 is 0x10
