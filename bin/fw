@@ -31,7 +31,7 @@
 # when a warden has put them there, else in $FW_HOME (~/.cache/fw).
 # The scripts are standard-library python, run with the Hive's python3.
 set -e
-here=$(cd "$(dirname "$0")/.." && pwd)
+here=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)   # follow the link `hive module add` puts in ~/.local/bin
 py=$(command -v python3 || echo /hive/tools/python/bin/python3)
 s=$here/scripts
 cmd=${1:-}
