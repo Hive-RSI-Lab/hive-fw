@@ -60,6 +60,12 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
       `app_main`. Firmware built for QIO needs
       `"# CONFIG_ESPTOOLPY_FLASHMODE_QIO is not set"` and
       `"CONFIG_ESPTOOLPY_FLASHMODE_DIO=y"` here.
+    - An ESP32-S3 image needs a few more lines to boot: the console on
+      UART (`CONFIG_ESP_CONSOLE_UART_DEFAULT=y`, not USB Serial/JTAG), no
+      octal PSRAM (`"# CONFIG_SPIRAM is not set"`), and DIO flash as above.
+    - Give the order as `fw build PATH --qemu`: the project is taken only
+      as the first argument, so `fw build --qemu PATH` builds the current
+      directory (issue #54).
     - With `CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT`, the asserts in
       one function can share one `__assert_func` call, so the PC in
       `assert failed: 0x…` can name the wrong line. Read the log lines
@@ -78,13 +84,13 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw build [P] [--qemu] [--no-prepare]` | Runs `prepare`, then `idf.py set-target <target>` on a fresh tree, then `idf.py build`. The IDF's environment is computed from `idf_tools.py export`, without sourcing `export.sh`. |
 | `fw idf [P] -- ARGS` | Any `idf.py` command with the right environment: `size-components`, `fullclean`, `-D SDKCONFIG_DEFAULTS=... reconfigure`. |
 | `eval "$(fw env [P])"` | Puts `IDF_PATH`, `PATH` and `FW_QEMU` in your shell, for scripts of your own. |
-| `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. |
+| `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. Don't set `"host_tests": "."` in an IDF project: the project's own `CMakeLists.txt` is IDF's, so the runner takes it and fails; use a subdirectory such as `test/host`. Keep host builds in their own dir (`build-host/`), not `build/`: `idf.py` refuses a `build/` that has no CMake cache of its own. |
 | `fw qemu [P] [--http 'GET /path' ...] [--hold S]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
 | `fw flash [P] --port PORT` | `idf.py -p PORT flash`. `PORT` is `/dev/ttyUSB0` for a board on this machine, or `rfc2217://host:4000` for a board elsewhere. `FW_PORT` sets a default. |
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
 | `fw ports` | The serial ports this sandbox can see. |
 | `fw bootlog LOG [--expect RE]` | Judges a log you already have. |
-| `fw pins [P] [--board F]` | Just the pin map against the board's KiCad netlist (`.net`, `.kicad_sch`, `.kicad_pcb`): the part of `fw constraints` hwde's side runs alone. |
+| `fw pins [P] [--board F]` | Just the pin map against the board's KiCad netlist (`.net`, `.kicad_sch`, `.kicad_pcb`): the part of `fw constraints` hwde's side runs alone. A `.kicad_sch` is turned into a netlist with `kicad-cli` (`$KICAD_CLI`, else `PATH`); with neither, export a `.net` beside the schematic (`kicad-cli sch export netlist --format kicadsexpr`) and fw reads that. |
 | `fw dts [P] [--dts F] [--board F] [--ref U]` | A Linux board's device tree pin mux against the KiCad netlist: each i.MX `fsl,pins` pad (and STM32 / sunxi / Rockchip pinctrl pads) is on the SoC, connected, and carries the net its function names (PAD-NONE, PAD-NC, PAD-NET). Config: fw.json `"dts"` (scripts/dts.py). |
 
 Builds run at nice 10 (`FW_NICE`), with ninja capped at 4 jobs
@@ -163,6 +169,29 @@ usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp::1234` and
 `xtensa-esp32-elf-gdb -ex 'target remote :1234' -ex 'thread apply all bt'`
 to see where. That's how the ADC wait was found.
 
+Hangs the shims don't cover yet, seen on ESP32-S3 images with IDF 5.5:
+
+- **`esp_adc`** (IDF 5's ADC driver, not the legacy `adc1_get_raw`): its
+  start-up self-calibration spins before `app_main`, so the `adc1` key
+  doesn't help (issue #48). Compile the ADC out of the QEMU build with a
+  project Kconfig option set in `qemu.sdkconfig`, or wrap
+  `adc_calc_hw_calibration_code` yourself (`-Wl,--wrap=` plus `-u` so the
+  linker keeps the wrapper).
+- **Wi-Fi**: PHY calibration can still hang with `"wifi": "off"`, because
+  the init runs before `esp_wifi_start`. Skip Wi-Fi init under the same
+  QEMU-only Kconfig option.
+- **SPI**: QEMU doesn't model GPSPI2, so `spi_device_polling_transmit`
+  never returns. The log just stops after `app_main` starts; the gdb
+  backtrace above shows it. Have the QEMU build treat the bus as empty and
+  expect the SPI device to be absent; host tests cover its driver.
+- **Deep sleep**: QEMU doesn't wake on the sleep timer, so a firmware that
+  sleeps between cycles ends its QEMU run at the first sleep.
+
+A firmware whose board model already exists for host tests can link that
+model as its HAL in the QEMU build (a Kconfig option plus an
+`if(CONFIG_...)` in the component's CMakeLists), so `fw qemu` runs the
+whole app and its self-test, not only the boot.
+
 ## What the firmware needs from the board
 
 `fw constraints` is fw's one checker. It puts everything the firmware takes
@@ -212,6 +241,15 @@ What it reads, and the needs it turns that into:
   at reset is STRAP-0/2/12. A strap the firmware uses with no such resistor
   stays a need, not a problem: the hifi core board's IO12 drives a PCM5102A
   DIN, high-Z at boot, and is fine.
+
+How the sources are read, and what that can mistake: a `#define NAME N`
+(or `GPIO_NUM_N`) counts as a pin when a word of `NAME` is PIN, GPIO, IO
+or a signal name (SDA, TX, CS, LED, ...). So a polarity or count macro
+named after a signal, such as `STATUS_LED_ACTIVE_LOW 1`, reads as GPIO1
+and can raise a false PIN-SHARED. Write such flags as `true`/`false`, or
+name them without the signal word. `ADCn_CHANNEL_m` defines are mapped
+with the classic ESP32's channel table, so on an S3 or C3 define the GPIO
+number instead (issue #57).
 
 Each finding is either a **need** (something the board must provide) or a
 **problem** (something the firmware or the board breaks), printed as
