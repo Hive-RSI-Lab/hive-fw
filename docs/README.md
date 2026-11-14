@@ -248,8 +248,8 @@ or a signal name (SDA, TX, CS, LED, ...). So a polarity or count macro
 named after a signal, such as `STATUS_LED_ACTIVE_LOW 1`, reads as GPIO1
 and can raise a false PIN-SHARED. Write such flags as `true`/`false`, or
 name them without the signal word. `ADCn_CHANNEL_m` defines are mapped
-with the classic ESP32's channel table, so on an S3 or C3 define the GPIO
-number instead (issue #57).
+through the target chip's own channel table (classic, S2, S3, C3, C6);
+on a chip without a table, define the GPIO number instead.
 
 Each finding is either a **need** (something the board must provide) or a
 **problem** (something the firmware or the board breaks), printed as

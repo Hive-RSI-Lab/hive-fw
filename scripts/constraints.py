@@ -91,8 +91,6 @@ import pins  # noqa: E402  (fw pins reads the firmware's GPIOs and the board's n
 FLASH = {6, 7, 8, 9, 10, 11}
 PSRAM = {16, 17}
 INPUT_ONLY = {34, 35, 36, 37, 38, 39}
-ADC1 = {0: 36, 1: 37, 2: 38, 3: 39, 4: 32, 5: 33, 6: 34, 7: 35}
-ADC2 = {0: 4, 1: 0, 2: 2, 3: 15, 4: 13, 5: 12, 6: 14, 7: 27, 8: 25, 9: 26}
 STRAPS = {
     0: "GPIO0 must be high at reset (low enters download mode): whatever drives it must "
        "leave it pulled up until the firmware runs",
@@ -543,10 +541,11 @@ def divider_problems(esp, lines: list[tuple[str, str]], problem, where: str) -> 
             if ref[:1] == "R" and ref[1:2].isdigit():
                 legs.setdefault(ref, []).append(net)
     adc = {}
+    adc1 = pins.CHIP_ADC.get(pins.chip_of(getattr(esp, "part", "") or ""), {}).get(1, {})
     for w, s in lines:
         m = re.match(r"\s*#\s*define\s+ADC_(\w+)\s+ADC1_CHANNEL_(\d)\b", s)
-        if m and int(m.group(2)) in ADC1:
-            adc[m.group(1)] = ADC1[int(m.group(2))]
+        if m and int(m.group(2)) in adc1:
+            adc[m.group(1)] = adc1[int(m.group(2))]
     for w, s in lines:
         m = re.match(r"\s*#\s*define\s+(\w+)_DIVIDER\s+\(?\s*(\d+(?:\.\d*)?)f?\s*\)?\s*(.*)$", s)
         if not m:
@@ -833,7 +832,8 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
     sources = cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"]
     when = pins.resolve_when(project, cfg)
     ignore = set(cfg.get("ignore") or [])
-    fw_pins = [p for p in pins.firmware_pins(project, sources, when) if p["name"] not in ignore]
+    chip = pins.chip_of(target)
+    fw_pins = [p for p in pins.firmware_pins(project, sources, when, chip) if p["name"] not in ignore]
     lines = list(source_lines(project, sources, when))
     eth = next(((w, m.group(1)) for w, s in lines for m in [re.search(rf"\bmodel=({RMII_PHYS})\b", s)] if m), None)
     if eth is None:  # the IDF enables its EMAC driver by default, so only the sources tell
@@ -865,10 +865,12 @@ def build_report(project: Path, fwpins: dict, cfg: dict, build: Path | None = No
                         f"for {p['name']}", p["where"])
     for w, s in lines:
         for m in re.finditer(r"\bADC2_CHANNEL_(\d+)\b", s):
-            g = ADC2.get(int(m.group(1)))
+            g = pins.CHIP_ADC.get(chip, {}).get(2, {}).get(int(m.group(1)))
+            adc1 = sorted(pins.CHIP_ADC.get(chip, {}).get(1, {}).values())
+            span = "GPIO32-39" if chip == "classic" else f"GPIO{adc1[0]}-{adc1[-1]}" if adc1 else "none"
             if wifi and g is not None:
                 problem("ADC2-WIFI", "pins", f"ADC2 channel {m.group(1)} (GPIO{g}) reads nothing while Wi-Fi runs: "
-                        "an analog input wants an ADC1 pin (GPIO32-39)", w)
+                        f"an analog input wants an ADC1 pin ({span})", w)
     i2c = []
     for w, s in lines:
         m = re.match(r"\s*#\s*define\s+(\w+?)_ADDRS?\s+(.+?)\s*(?:/[/*](.*?))?(?:\*/)?\s*$", s)

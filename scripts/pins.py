@@ -88,6 +88,16 @@ CHIP_UART0 = {"S2": {"TXD0": 43, "RXD0": 44}, "S3": {"TXD0": 43, "RXD0": 44},
               "C3": {"TXD0": 21, "RXD0": 20}, "C6": {"TXD0": 16, "RXD0": 17}}
 CHIP_STRAPPING = {"classic": STRAPPING, "S2": {0, 45, 46}, "S3": {0, 3, 45, 46},
                   "C3": {2, 8, 9}, "C6": {8, 9, 15}}
+# ADCn_CHANNEL_m -> GPIO per chip (each chip's datasheet, "ADC" in the
+# peripheral pin table): an S3's ADC1 channel 0 is GPIO1, not the classic
+# ESP32's GPIO36. A chip with no table maps no channel rather than guess.
+CHIP_ADC = {
+    "classic": ADC,
+    "S2": {1: {n: n + 1 for n in range(10)}, 2: {n: n + 11 for n in range(10)}},
+    "S3": {1: {n: n + 1 for n in range(10)}, 2: {n: n + 11 for n in range(10)}},
+    "C3": {1: {n: n for n in range(5)}, 2: {0: 5}},
+    "C6": {1: {n: n for n in range(7)}},
+}
 
 
 def chip_of(*names: str) -> str:
@@ -502,11 +512,14 @@ def resolve_when(project: Path, cfg: dict):
     return None
 
 
-def firmware_pins(project: Path, globs: list[str], when=None) -> list[dict]:
+def firmware_pins(project: Path, globs: list[str], when=None,
+                  chip: str = "classic") -> list[dict]:
     """[{"gpio", "name", "where"}] read from the sources. With when (a
     Kconfig symbol, or an sdkconfig's symbols: cond_holds), a line that ends
     in `if COND` counts only when COND holds for it, so one Kconfig carrying
-    several boards' defaults gives one board's pins."""
+    several boards' defaults gives one board's pins. chip ('classic', 'S3',
+    ...: chip_of) picks the table an ADCn_CHANNEL_m define maps through."""
+    adc = CHIP_ADC.get(chip, {})
     out = []
 
     def add(g, name, where):
@@ -529,7 +542,7 @@ def firmware_pins(project: Path, globs: list[str], when=None) -> list[dict]:
             continue
         m = re.match(r"\s*#\s*define\s+(\w+)\s+\(?\s*ADC(\d)_CHANNEL_(\d+)\b", line)
         if m:
-            g = ADC.get(int(m.group(2)), {}).get(int(m.group(3)))
+            g = adc.get(int(m.group(2)), {}).get(int(m.group(3)))
             if g is not None:
                 add(g, m.group(1), where)
             continue
@@ -615,9 +628,13 @@ def check(project: Path, cfg: dict) -> dict:
         classic = chip == "classic"
         strapping = CHIP_STRAPPING.get(chip, set())
         flash = FLASH if classic else set()
+        board_pins = pins
+        if not classic:   # its ADC channels sit on other GPIOs
+            board_pins = [p for p in firmware_pins(project, cfg.get("sources") or ["**/*.h", "**/*.c", "**/*.patch"],
+                                             resolve_when(project, cfg), chip) if p["name"] not in ignore]
         rows = []
         used = set()
-        for p in pins:
+        for p in board_pins:
             g, name = p["gpio"], p["name"]
             have = esp.gpios.get(g, "absent")
             row = {**p, "net": have if have != "absent" else None, "verdict": "pass", "why": ""}

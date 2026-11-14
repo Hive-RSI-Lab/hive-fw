@@ -114,6 +114,13 @@ class Constraints(unittest.TestCase):
         self.assertTrue(any("ADC2 channel 7 (GPIO27)" in x["problem"] for x in res["problems"]))
         self.assertTrue(any("UART0" in n for n in self.needs(res, "pins")))
 
+    def test_adc2_on_an_s3_names_the_s3s_gpio(self):
+        res = constraints.build_report(self.p, {"target": "esp32s3"}, {"sources": ["*.h"]}, None)
+        adc2 = [x["problem"] for x in res["problems"] if x["code"] == "ADC2-WIFI"]
+        self.assertEqual(len(adc2), 1, res["problems"])
+        self.assertIn("ADC2 channel 7 (GPIO18)", adc2[0])
+        self.assertIn("ADC1 pin (GPIO1-10)", adc2[0])
+
     def test_when_picks_one_boards_lines(self):
         (self.p / "Kconfig.patch").write_text(
             '+\tdefault "model=LAN8720,mdc=23" if BOARD_A\n'
