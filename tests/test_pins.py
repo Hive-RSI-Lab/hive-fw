@@ -140,6 +140,27 @@ class Board(Fixture):
         self.assertTrue(r["ok"], r)
         self.assertFalse([p for p in r["boards"][0]["pins"] if "strapping" in p["why"]])
 
+    def test_adc_channels_map_through_the_chips_own_table(self):
+        # an S3's ADC1 channel n is GPIOn+1 and ADC2's GPIOn+11; a C3's ADC1 channel n is GPIOn
+        (self.d / "a.h").write_text("#define MON_ISRC ADC1_CHANNEL_0\n#define MON_VSRC ADC1_CHANNEL_9\n"
+                                    "#define POT ADC2_CHANNEL_7\n")
+
+        def gpios(chip):
+            return {p["name"]: p["gpio"] for p in pins.firmware_pins(self.d, ["a.h"], chip=chip)}
+        self.assertEqual(gpios("classic"), {"MON_ISRC": 36, "POT": 27})
+        self.assertEqual(gpios("S3"), {"MON_ISRC": 1, "MON_VSRC": 10, "POT": 18})
+        self.assertEqual(gpios("C3"), {"MON_ISRC": 0})
+        self.assertEqual(gpios("H2"), {})      # no table: no guess
+        s3 = {"5": ("IO1_5", "/MON_ISRC"), "6": ("IO2_6", "/MON_VSRC"), "3": ("3V3_3", "+3V3")}
+        net = netlist(s3).replace("ESP32-WROVER-E-N8R8", "ESP32-S3-MINI-1-N8").replace(
+            "WIFI-SMD_ESP32-WROVER-IE8MB", "BULETM-SMD_ESP32-S3-MINI-1-N8")
+        (self.d / "s3.net").write_text(net)
+        (self.d / "a.h").write_text("#define MON_ISRC ADC1_CHANNEL_0\n#define MON_VSRC ADC1_CHANNEL_1\n")
+        r = pins.check(self.d, {"board": ["s3.net", "board.net"], "sources": ["a.h"]})
+        s3_rows, classic_rows = ({p["name"]: (p["gpio"], p["verdict"]) for p in b["pins"]} for b in r["boards"])
+        self.assertEqual(s3_rows, {"MON_ISRC": (1, "pass"), "MON_VSRC": (2, "pass")})
+        self.assertEqual(classic_rows["MON_ISRC"][0], 36)   # the next board keeps its own chip's table
+
     def test_netlist(self):
         (b,) = pins.read_board(self.d / "board.net")[0]
         self.assertEqual((b.ref, b.psram), ("U5", True))
