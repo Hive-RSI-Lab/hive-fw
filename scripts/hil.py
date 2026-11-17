@@ -519,7 +519,8 @@ def _go(a, doc, done):
         err = f"{type(e).__name__}: {e}"[:160]
         where = "in the after check" if at.get("after") else f"at {at['case']}" if at.get("case") else \
             f"after {res[-1]['suite']}/{res[-1]['name']}" if res else "before any case"
-        why = f"fw hil crashed {where} ({err}) after {n_sent} of {n_all} cases were sent; the rest were not"
+        why = f"fw hil crashed {where} ({err}): {n_sent} of {n_all} cases were sent, but the restart and heap were not checked" \
+            if at.get("after") else f"fw hil crashed {where} ({err}) after {n_sent} of {n_all} cases were sent; the rest were not"
         if at.get("case") and not at.get("after"):
             why += f"; {at['case']} was being sent and may have reached the board"
             if at.get("write"):

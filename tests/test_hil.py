@@ -470,6 +470,29 @@ class Exits(unittest.TestCase):
         self.assertEqual(self.main(), 1)
         self.assertIn("ValueError", self.doc()["summary"])
 
+    def test_a_crash_before_the_run_still_writes(self):
+        def no_bench(dev, lane=None):
+            raise OSError("no bench dir")
+        hil.Bench = no_bench
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["results"]), (1, []))
+        self.assertIn("fw hil failed: OSError", d["summary"])
+
+    def test_a_crash_in_the_after_check_says_what_was_not_checked(self):
+        board = self.fake(FakeBoard())
+        call = board.call
+
+        def boom_at_last_diag(cmd, timeout=0):
+            if cmd.startswith("api diag") and board.diags:
+                raise ValueError("odd diag")
+            return call(cmd, timeout)
+        board.call = boom_at_last_diag
+        self.assertEqual(self.main(), 1)
+        why = self.doc()["results"][-1]["why"]
+        self.assertIn("crashed in the after check", why)
+        self.assertIn("the restart and heap were not checked", why)
+
     def test_a_crash_mid_plan_keeps_the_cases_done(self):
         board = self.fake(FakeBoard())
         call = board.call
