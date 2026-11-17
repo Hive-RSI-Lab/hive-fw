@@ -23,6 +23,11 @@ Rules the lab found:
   gets ESP_ERR_ESPNOW_NO_MEM, not more throughput.
 - Wi-Fi modem sleep (the default with Bluetooth on) delays and drops
   frames to a sleeping peer; measure with the power save you will ship.
+- With Bluetooth in the image, never `esp_wifi_set_ps(WIFI_PS_NONE)`: the
+  coexistence code in the Wi-Fi blob logs "Should enable WiFi modem sleep
+  when both WiFi and Bluetooth are enabled" and panics a few seconds later
+  (IDF 4.4, seen on every try on the Lite). Refuse it under
+  `CONFIG_BT_ENABLED`; `WIFI_PS_MIN_MODEM` is the fastest you get.
 - Only frames from the configured peer are looked at; nothing is
   forwarded. Encryption (a PMK/LMK) is off in the template: turn it on for
   anything that carries commands.
@@ -45,6 +50,19 @@ Rules the lab found:
   `ESP_IDF_VERSION` checks. On 5.5 `esp_wifi_config_espnow_rate` is
   deprecated (it still works; a warning, not an error). `fw new check
   espnow-link` builds it on every IDF in template.json.
+- What to expect (two Lites in one house, station on the home AP, Bluetooth
+  on, `WIFI_PS_MIN_MODEM`): 64-byte ping at 1 Mbps, RTT median 3.7 ms,
+  p99 30–75 ms, 3–9% of frames lost after the MAC's retries; a 250-byte
+  flood peaks near 400 kbps received at 24M with a third of frames lost.
+  Every lost frame was a MAC nack (the receiver's radio asleep), none was
+  dropped inside the boards. Good for control and sync messages with an
+  app-level retry; not for streaming audio. Data and method:
+  hifi-lite-lab `lab/espnow.md`.
+- A radio experiment can hang a board (one Lite stopped answering right
+  after a run and stayed off the network). An unattended board needs
+  `CONFIG_ESP_TASK_WDT_PANIC=y` so a stuck task restarts it, and a check
+  that restarts it after long enough off its management link; record why
+  it restarted (an RTC no-init marker) so the next self-test reports it.
 
 Use: `fw new component NAME --from espnow-link`, call
 `NAME_espnow_start(&cfg)` on both boards after `esp_wifi_start()` (echo on
