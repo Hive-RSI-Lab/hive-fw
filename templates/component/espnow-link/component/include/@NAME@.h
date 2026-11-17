@@ -135,6 +135,12 @@ typedef enum {
 	@UNAME@_GOT_OTHER, /* a good frame this end has no use for */
 } @NAME@_got_t;
 
+/* A radio callback's copy of a received value into its queue item's buffer
+ * (cap bytes): the length copied, 0 (nothing copied) when there is nothing
+ * or it is longer than cap. The item then goes to @NAME@_receive, where a
+ * length of 0 counts as bad. */
+size_t @NAME@_take(uint8_t *dst, size_t cap, const uint8_t *src, size_t n);
+
 /* What an end does with the bytes of one frame from the radio (n as
  * received: never trusted). An echo end answers PINGs and counts DATA into
  * rx; an end that takes PONGs (pongs) counts them into tx. rx is always

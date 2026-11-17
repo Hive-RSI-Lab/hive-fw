@@ -241,6 +241,12 @@ void @NAME@_pong_for(const @NAME@_frame_t *ping, int64_t t2, int64_t t3, @NAME@_
 
 /* ------------------------------------------------------- one received frame */
 
+size_t @NAME@_take(uint8_t *dst, size_t cap, const uint8_t *src, size_t n) {
+	if (!src || !n || n > cap) return 0;
+	memcpy(dst, src, n);
+	return n;
+}
+
 @NAME@_got_t @NAME@_receive(@NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs, const uint8_t *buf, size_t n,
                             int64_t t_us, @NAME@_frame_t *pong) {
 	@NAME@_frame_t f;

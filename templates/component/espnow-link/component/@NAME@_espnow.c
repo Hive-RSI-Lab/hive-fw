@@ -76,9 +76,8 @@ static void recv_cb(const uint8_t *mac, const uint8_t *data, int n) {
 		return;
 	}
 	rx_item_t *it = rx_it;
-	it->len = (uint8_t) n;
+	it->len = (uint8_t) @NAME@_take(it->data, sizeof(it->data), data, (size_t) n);
 	it->t_us = t;
-	memcpy(it->data, data, n);
 	if (xQueueSend(q, it, 0) != pdTRUE) q_full++;
 }
 

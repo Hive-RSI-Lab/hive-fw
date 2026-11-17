@@ -7,6 +7,7 @@ import sys
 import time
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tests import _util  # noqa: F401
@@ -360,8 +361,27 @@ class Exits(unittest.TestCase):
         self.assertRegex(d["summary"], r"^stopped by SIGTERM after \d+ of \d+ cases$")
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
-    def test_sigterm_after_the_last_case_is_not_a_stop(self):
-        """A SIGTERM once every case is sent (here during the after check) leaves the run whole, not "stopped after N of N"."""
+    def test_sigterm_once_run_returns_is_not_a_stop(self):
+        """A SIGTERM between run() returning and the report leaves the run whole, not "stopped after N of N"."""
+        self.fake(FakeBoard())
+        real = hil.run
+
+        def run_then_term(*a, **k):
+            out = real(*a, **k)
+            os.kill(os.getpid(), signal.SIGTERM)
+            return out
+        before = signal.getsignal(signal.SIGTERM)
+        with mock.patch.object(hil, "run", run_then_term):
+            self.assertEqual(self.main(), 0)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["stopped"]), (0, False))
+        self.assertEqual(d["results"][-1]["name"], "no_restart_heap_held")
+        self.assertTrue(d["results"][-1]["pass"])
+        self.assertNotIn("stopped", d["summary"])
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_sigterm_in_the_after_check_is_a_stop(self):
+        """A SIGTERM during the after snapshot still stops the run at once, and says every case was sent."""
         board = self.fake(FakeBoard())
         call = board.call
         diags = []
@@ -374,12 +394,12 @@ class Exits(unittest.TestCase):
             return call(cmd, timeout)
         board.call = call_then_term
         before = signal.getsignal(signal.SIGTERM)
-        self.assertEqual(self.main(), 0)
+        self.assertEqual(self.main(), 1)
         d = self.doc()
-        self.assertEqual((d["exit"], d["stopped"]), (0, False))
-        self.assertEqual(d["results"][-1]["name"], "no_restart_heap_held")
-        self.assertTrue(d["results"][-1]["pass"])
-        self.assertNotIn("stopped", d["summary"])
+        self.assertEqual((d["exit"], d["stopped"]), (1, True))
+        self.assertEqual(d["results"][-1]["name"], "stopped")
+        self.assertIn("in the after check: every case was sent", d["results"][-1]["why"])
+        self.assertIn("in the after check", d["summary"])
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
     def test_json_dir_is_made(self):

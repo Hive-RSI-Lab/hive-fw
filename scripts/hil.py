@@ -304,7 +304,7 @@ def run(bench, plan, suites=None, heap_min_floor=None, out=None, at=None):
         bench.clear() if hasattr(bench, "clear") else None
         out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
                     "why": f"no diag before the run ({after['line']}), so nothing was sent"})
-        return out
+        return _settled(out)
     for suite, cases in plan["suites"].items():
         if suites and suite not in suites:
             continue
@@ -322,7 +322,6 @@ def run(bench, plan, suites=None, heap_min_floor=None, out=None, at=None):
             at.update(case=f"{suite}/{c['name']}", write=c.get("body") is not None and any(k.get("save") for k in cases))
             t0 = time.time()
             a = bench.call(cmd, timeout=c.get("timeout", REPLY_S))
-            at.clear()
             secs = round(time.time() - t0, 1)
             if a is None or (isinstance(a, dict) and a.get("status") == STOP):
                 stopped = f"the run stopped at {suite}/{c['name']}"
@@ -345,19 +344,27 @@ def run(bench, plan, suites=None, heap_min_floor=None, out=None, at=None):
             if why.startswith(SKIP):
                 r["pass"], r["skip"] = None, True
             out.append(r)
-    if signal.getsignal(signal.SIGTERM) is _stop:   # under main: the sending is over, so a stop from here on
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # would only lose the report (it said "after N of N")
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+            at.clear()   # only now: a stop while the answer is judged still names this case
+    at["after"] = True   # every case is sent: a stop from here is a stop in the after check
     if stopped:
         dropped = bench.clear() if hasattr(bench, "clear") else ""
         out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before, "clear": dropped},
                     "why": f"not checked: {stopped}" + (f" (bench: {dropped})" if dropped else "")})
-        return out
+        return _settled(out)
     t_end = time.time()
     now = snapshot(bench, after)
     why = after_check(before, now, after, t_end - t_before)
     out.append({"suite": "after", "name": "no_restart_heap_held", "pass": not why, "why": why,
                 "answer": {"before": before, "after": now, "heap_min_floor": after["heap_min_floor"]}})
+    return _settled(out)
+
+
+def _settled(out):
+    """run()'s result, with SIGTERM and SIGINT ignored first when main's handler is on: the run is whole, and
+    a stop between run() returning and the report would call it "stopped after N of N cases"."""
+    if signal.getsignal(signal.SIGTERM) is _stop:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     return out
 
 
@@ -466,20 +473,23 @@ def _go(a, doc, done):
     res, at, note = [], {}, ""
     n_all = sum(len(cs) for s, cs in plan["suites"].items() if not suites or s in suites)
     try:
-        run(bench, plan, suites, a.heap_min_floor, out=res, at=at)   # ignores SIGTERM and SIGINT once the last case is sent
+        run(bench, plan, suites, a.heap_min_floor, out=res, at=at)   # ignores SIGTERM and SIGINT before it returns
     except Stopped as e:
         n_done = len(res)
         dropped = bench.clear(timeout=CLEAR_ON_STOP_S)
         why = f"stopped by {e} after {n_done} of {n_all} cases; the rest were not sent"
-        if at.get("case"):
+        if at.get("after"):
+            why = f"stopped by {e} in the after check: every case was sent, but the restart and heap were not checked"
+        elif at.get("case"):
             why += f"; {at['case']} was being sent and may have reached the board"
             if at.get("write"):
                 why += " (a write, so the board may be left changed: put it back by hand)"
         res.append({"suite": "after", "name": "stopped", "pass": False, "answer": {"clear": dropped},
                     "why": why + (f" (bench: {dropped})" if dropped else "")})
         doc["stopped"] = True
-        note = f"stopped by {e} after {n_done} of {n_all} cases"
+        note = f"stopped by {e} in the after check" if at.get("after") else f"stopped by {e} after {n_done} of {n_all} cases"
         print(f"fw hil: stopped by {e}", file=sys.stderr)
+    _settled(res)   # run() did, unless it raised
     # from here SIGTERM and SIGINT are ignored (set above, or by the handler), so the report is always written
     for r in res:
         tag = "SKIP" if r.get("skip") else "PASS" if r["pass"] else "FAIL"

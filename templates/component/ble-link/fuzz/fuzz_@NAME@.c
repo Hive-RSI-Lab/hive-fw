@@ -103,8 +103,10 @@ static void json_ok(size_t n, const char *out, size_t cap) {
 static void adv(rd_t *z) {
 	uint8_t mac[6], other[6], out[@UNAME@_ADV_LEN];
 	for (int i = 0; i < 6; i++) mac[i] = other[i] = u8(z);
-	other[u8(z) % 6] ^= (uint8_t) (1 + u8(z) % 255);
-	uint16_t mtu = (uint16_t) (u8(z) | u8(z) << 8);
+	uint8_t at = u8(z), flip = u8(z); /* one input byte each, in order */
+	other[at % 6] ^= (uint8_t) (1 + flip % 255);
+	uint8_t lo = u8(z), hi = u8(z);
+	uint16_t mtu = (uint16_t) (lo | hi << 8);
 	uint16_t p = @NAME@_payload_for_mtu(mtu);
 	FUZZ_ASSERT(mtu < 23 ? p == 0 : p == (mtu - 3 < @UNAME@_BLE_PAYLOAD ? mtu - 3 : @UNAME@_BLE_PAYLOAD));
 	FUZZ_ASSERT(@NAME@_adv_build(mac, out, sizeof(out) - 1) == 0);
@@ -127,6 +129,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t size) {
 		adv(&z);
 		return 0;
 	}
+	uint8_t item[@UNAME@_BLE_PAYLOAD]; /* rx_item_t's data */
+	FUZZ_ASSERT(@NAME@_take(item, sizeof(item), NULL, size) == 0); /* a callback with no value */
 	bool echo = !(d[0] & 1);
 	int64_t now = d[0] & 2 ? 0 : (int64_t) 86400 * 1000000 * 30; /* just booted, or up a month */
 
@@ -135,7 +139,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t size) {
 	@NAME@_rx_init(&rx);
 	@NAME@_tx_init(&tx, SESSION);
 	uint32_t bad = 0, pings = 0, pongs_in = 0;
-	uint8_t item[@UNAME@_BLE_PAYLOAD]; /* rx_item_t's data */
 	uint8_t air[512] = {0}; /* a damaged length may run past the frame */
 	for (int frames = 0; z.at < z.n && frames < 256; frames++) {
 		now += (int64_t) (u8(&z) % 40) * 30000;

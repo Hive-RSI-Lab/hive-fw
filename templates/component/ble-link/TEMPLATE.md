@@ -3,9 +3,10 @@
 From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8, Bluedroid,
 Wi-Fi station on the home AP and the A2DP sink up beside it).
 
-- `@NAME@.c` / `include/@NAME@.h`: the same link core as `espnow-link`
-  (plain C, host-tested): the frames, the duplicate window, the echo end's
-  counts, the pinger's round trips, NTP-style clock offset and drift, JSON.
+- `@NAME@.c` / `include/@NAME@.h`: `espnow-link`'s link core (plain C,
+  host-tested): the frames, the duplicate window, the echo end's counts,
+  the pinger's round trips, NTP-style clock offset and drift, JSON; and
+  `@NAME@_take`, the callbacks' copy into the queue.
 - `@NAME@_bleutil.c` / `include/@NAME@_bleutil.h`: the BLE parts that need
   no radio (plain C, host-tested). The advertisement that marks a board
   (company 0xffff, "hl" and its Wi-Fi MAC: for labs, never a product) and
@@ -27,7 +28,7 @@ Wi-Fi station on the home AP and the A2DP sink up beside it).
   goes through `@NAME@_take` (as the callbacks queue it: too long counts
   as bad) and `@NAME@_receive`, the same calls `post()` and `handle()`
   make, with the counts, percentiles, drift and JSON checked after each;
-  and the advertisement's mark walk on raw bytes. The core is
+  and the advertisement's mark walk on raw bytes. The counting is
   `espnow-link`'s, so its two regression inputs are in `seeds/` too.
 
 Rules the lab found:
