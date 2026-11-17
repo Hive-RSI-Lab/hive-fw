@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -286,6 +287,7 @@ class Exits(unittest.TestCase):
 
     def setUp(self):
         self.d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d, True)
         self.plan = self.d / "plan.json"
         self.plan.write_text(json.dumps(PLAN))
         self.out = self.d / "out.json"
@@ -347,23 +349,46 @@ class Exits(unittest.TestCase):
                 os.kill(os.getpid(), signal.SIGTERM)
             return call(cmd, timeout)
         board.call = call_then_term
+        before = signal.getsignal(signal.SIGTERM)
         self.assertEqual(self.main(), 1)
         d = self.doc()
         self.assertEqual((d["exit"], d["stopped"]), (1, True))
         self.assertEqual(board.cleared, 1)
         self.assertLessEqual(len(board.sent), 4)
         self.assertIn("stopped by SIGTERM", d["results"][-1]["why"])
-        self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+        self.assertIn("was being sent", d["results"][-1]["why"])
+        self.assertRegex(d["summary"], r"^stopped by SIGTERM after \d+ of \d+ cases$")
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
+    def test_json_dir_is_made(self):
+        self.out = self.d / "new" / "deeper" / "out.json"
+        self.fake(FakeBoard())
+        self.assertEqual(self.main(), 0)
+        self.assertEqual(self.doc()["exit"], 0)
+        self.assertEqual([f.name for f in self.out.parent.iterdir()], ["out.json"])
+
+    def test_a_crash_still_writes(self):
+        board = self.fake(FakeBoard())
+
+        def boom(cmd, timeout=0):
+            raise ValueError("bad answer")
+        board.call = boom
+        self.assertEqual(self.main(), 1)
+        self.assertIn("ValueError", self.doc()["summary"])
 
     def test_sigterm_during_a_stuck_send_exits_in_time(self):
         st = self.d / "serialtab"
-        st.write_text('#!/bin/sh\nif [ "$1" = clear ]; then echo dropped 2; exit 0; fi\nexec sleep 60\n')
+        st.write_text('#!/bin/sh\nif [ "$1" = clear ]; then echo dropped 2; exit 0; fi\ntouch "$H2_SERIAL_DIR/started"\nexec sleep 60\n')
         st.chmod(0o755)
         env = dict(os.environ, FW_SERIALTAB=str(st), H2_SERIAL_DIR=str(self.d))
         script = Path(hil.__file__)
         pr = subprocess.Popen([sys.executable, str(script), "--dev", "3076f52d7400", "--plan", str(self.plan), "--json", str(self.out)],
                               env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        time.sleep(1)
+        self.addCleanup(lambda: pr.poll() is None and (pr.kill(), pr.wait()))
+        deadline = time.time() + 30
+        while not (self.d / "started").exists():   # the send is stuck in serialtab, handlers long installed
+            self.assertLess(time.time(), deadline, "fw hil never reached serialtab")
+            time.sleep(0.05)
         t0 = time.time()
         pr.send_signal(signal.SIGTERM)
         self.assertEqual(pr.wait(timeout=10), 1)
