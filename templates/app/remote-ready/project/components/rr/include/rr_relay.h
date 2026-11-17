@@ -37,5 +37,8 @@ void rr_relay_up(bool *configured, bool *up);
 /* True while the station has an IP. */
 bool rr_net_up(void);
 
+/* the build has the Hive key, so it takes signed commands (updates included) */
+bool rr_relay_has_key(void);
+
 /* Internal RAM free once the board settled (rr_heap_boot_due); 0 until then. */
 uint32_t rr_boot_heap(void);

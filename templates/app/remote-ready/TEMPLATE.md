@@ -44,18 +44,26 @@ desk. Put your app in `app_start()` in `main/app_main.c`.
        fw build
 
    The build says `Hive key: set`, or `Hive key: missing (HIFI_HIVE_PUBKEY)`:
-   a build without it joins Wi-Fi and reports, but refuses every command.
+   a build without it refuses every command, so it fails its self-test
+   (`hive_key`) and its trial: sent as an update, it rolls back to the
+   image that can still take one.
    Up to two keys, comma-separated, for a rotation.
 2. **Wi-Fi.** Over USB, the bench's Wi-Fi step (or by hand)
    `api wifi "{\"ssid\":\"...\",\"password\":\"...\"}"`. It is kept in the
    default NVS, namespace `config`, blobs `ssid` and `password` (the
    hi-fi's places, so a board moved between the two keeps its network).
+   A board with no `config` blobs but a network in IDF's own Wi-Fi store
+   joins that one. NVS is never erased at boot: if it won't open, the
+   trial fails and an update rolls back instead of losing the network.
 3. **The bench link.** The USB bringup's remote step sends
    `api remote {"url":"wss://...","user":...,"password":...,"key":...}`
    (the Access token and the board's own key, which the bench mints); they
    are kept in the `settings` partition and `GET remote` never returns
    them. From then on the board dials the bench at boot and the bench
    reaches it as `--dev <its Wi-Fi MAC>`.
+   Only `wss://` links are dialled: a board whose link is an `mqtt(s)://`
+   one (an older hi-fi setup) gets no dial-in, fails its trial and rolls
+   back, so check `GET remote` on it before sending this app over the air.
 
 ## The self-test
 

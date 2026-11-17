@@ -12,6 +12,10 @@ rr_trial_verdict_t rr_trial_judge(const rr_trial_t *t, uint32_t elapsed_s, char 
 		snprintf(why, n, "built with RR_SELFTEST_FAIL");
 		return RR_TRIAL_BAD;
 	}
+	if (t->no_key) {
+		snprintf(why, n, "no Hive key in this build");
+		return RR_TRIAL_BAD; /* keep the image that can still take commands */
+	}
 	if (!t->heap_ok) missing = "heap below 12 KB";
 	else if (t->wifi_configured && !t->wifi_ok) missing = "Wi-Fi not joined";
 	else if (t->relay_configured && !t->relay_ok) missing = "relay not reached";

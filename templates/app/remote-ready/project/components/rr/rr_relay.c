@@ -126,6 +126,8 @@ static void load_settings(void) {
 	load_str("hifi_relay_key", "", key, sizeof(key));
 }
 
+bool rr_relay_has_key(void) { return rem.nkeys > 0; }
+
 void rr_relay_up(bool *configured, bool *up) {
 	*configured = url[0] != 0;
 	*up = connected;
@@ -394,6 +396,7 @@ static void relay_task(void *arg) {
 			if (!trial_start) trial_start = now ? now : 1;
 			rr_trial_t t = {0};
 			if (trial_inputs) trial_inputs(&t);
+			t.no_key = rem.nkeys == 0;
 			t.relay_configured = url[0] != 0;
 			t.relay_ok = connected;
 			char why[96];
@@ -422,11 +425,8 @@ void rr_relay_start(const rr_ops_t *o, rr_trial_inputs_fn inputs) {
 	ops = o;
 	trial_inputs = inputs;
 	esp_err_t e = nvs_flash_init_partition(SETTINGS_PART);
-	if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		/* only this partition, never the Wi-Fi's */
-		nvs_flash_erase_partition(SETTINGS_PART);
-		e = nvs_flash_init_partition(SETTINGS_PART);
-	}
+	/* never erase it: it holds the bench link and its key. Without it the
+	 * trial fails and the bootloader goes back to the image that read it. */
 	settings_ok = e == ESP_OK;
 	if (!settings_ok) ESP_LOGE(TAG, "the settings partition didn't open: %s", esp_err_to_name(e));
 
@@ -447,5 +447,5 @@ void rr_relay_start(const rr_ops_t *o, rr_trial_inputs_fn inputs) {
 
 	inbox = xQueueCreate(4, sizeof(msg_t));
 	xTaskCreate(worker, "rr_cmd", 6144, NULL, ESP_TASK_PRIO_MIN + 2, NULL);
-	xTaskCreate(relay_task, "rr_relay", 4096, NULL, ESP_TASK_PRIO_MIN + 1, NULL);
+	xTaskCreate(relay_task, "rr_relay", 5120, NULL, ESP_TASK_PRIO_MIN + 1, NULL);
 }

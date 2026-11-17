@@ -2,11 +2,13 @@
 # Hive's bench, updates over it and the trial boot that rolls a bad image
 # back. The rr_*.c files without ESP-IDF calls are host-tested
 # (test/host/test_rr.c); rr_relay.c and rr_ws.c tie them to the board.
-set(requires nvs_flash esp_wifi esp_netif app_update esp-tls mbedtls tcp_transport console)
+set(requires nvs_flash esp_wifi esp_netif app_update esp-tls mbedtls tcp_transport console esp_timer)
 # IDF 4 has libsodium built in; IDF 5 gets it from the component registry
 # (idf_component.yml), which adds it to this component's requirements
 if(IDF_VERSION_MAJOR LESS 5)
 	list(APPEND requires libsodium)
+else()
+	list(APPEND requires esp_app_format)
 endif()
 
 idf_component_register(

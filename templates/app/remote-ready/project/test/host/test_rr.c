@@ -251,6 +251,9 @@ static void test_trial(void) {
 	TEST_ASSERT_EQUAL_INT(RR_TRIAL_GOOD, rr_trial_judge(&t, 10, why, sizeof(why)));
 	t.forced_fail = true;
 	TEST_ASSERT_EQUAL_INT(RR_TRIAL_BAD, rr_trial_judge(&t, 1, why, sizeof(why)));
+	t.forced_fail = false;
+	t.no_key = true; /* a keyless image could never take another update */
+	TEST_ASSERT_EQUAL_INT(RR_TRIAL_BAD, rr_trial_judge(&t, 1, why, sizeof(why)));
 	TEST_ASSERT_TRUE(rr_heap_line(40000, 30000, why, sizeof(why)));
 	TEST_ASSERT_FALSE(rr_heap_line(RR_HEAP_MIN - 1, 0, why, sizeof(why)));
 }

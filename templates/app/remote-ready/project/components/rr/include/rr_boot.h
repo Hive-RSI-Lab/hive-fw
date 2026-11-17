@@ -22,6 +22,7 @@ typedef struct {
 	bool relay_configured, relay_ok;
 	bool heap_ok;
 	bool forced_fail;     /* CONFIG_RR_SELFTEST_FAIL: a build that fails on purpose */
+	bool no_key;          /* built without the Hive key: it could never be updated again */
 } rr_trial_t;
 
 typedef enum { RR_TRIAL_WAIT = 0, RR_TRIAL_GOOD, RR_TRIAL_BAD } rr_trial_verdict_t;

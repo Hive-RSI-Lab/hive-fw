@@ -60,7 +60,7 @@ static void app_start(void) {
 static bool wifi_load(char ssid[33], char pw[65]) {
 	nvs_handle_t h;
 	if (nvs_open("config", NVS_READONLY, &h) != ESP_OK) return false;
-	size_t n = 32, m = 64;
+	size_t n = 33, m = 65; /* squeezelite writes strlen + 1 */
 	memset(ssid, 0, 33);
 	memset(pw, 0, 65);
 	bool ok = nvs_get_blob(h, "ssid", ssid, &n) == ESP_OK && ssid[0];
@@ -96,12 +96,19 @@ static void wifi_start(void) {
 	ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 	esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi, NULL);
 	esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi, NULL);
+	/* a board set up through IDF's own Wi-Fi store (no "config" blobs) */
+	wifi_config_t stored = {0};
+	esp_wifi_get_config(WIFI_IF_STA, &stored);
 	esp_wifi_set_storage(WIFI_STORAGE_RAM); /* ours is in "config" */
 	esp_wifi_set_mode(WIFI_MODE_STA);
 	ESP_ERROR_CHECK(esp_wifi_start());
 	char ssid[33], pw[65];
 	if (wifi_load(ssid, pw)) wifi_join(ssid, pw);
-	else ESP_LOGW(TAG, "no Wi-Fi set: api wifi \"{\\\"ssid\\\":\\\"...\\\",\\\"password\\\":\\\"...\\\"}\"");
+	else if (stored.sta.ssid[0]) {
+		snprintf(ssid, sizeof(ssid), "%.32s", (const char *) stored.sta.ssid);
+		snprintf(pw, sizeof(pw), "%.64s", (const char *) stored.sta.password);
+		wifi_join(ssid, pw);
+	} else ESP_LOGW(TAG, "no Wi-Fi set: api wifi \"{\\\"ssid\\\":\\\"...\\\",\\\"password\\\":\\\"...\\\"}\"");
 }
 
 /* ------------------------------------------------------------------ the test API */
@@ -139,6 +146,8 @@ static void op_selftest(rr_selftest_t *t) {
 	rr_relay_ota_status(&o);
 	rr_selftest_add(t, "trial", strcmp(o.state, "unknown") != 0, "%s %s", o.slot, o.state);
 
+	bool key = rr_relay_has_key();
+	rr_selftest_add(t, "hive_key", key, "%s", key ? "set" : "missing: remote commands refused");
 	if (SELFTEST_FAIL) rr_selftest_add(t, "selftest_fail", false, "built with RR_SELFTEST_FAIL");
 	/* your app's own checks: rr_selftest_add(t, "name", pass, "value") */
 }
@@ -227,11 +236,10 @@ static void console_start(void) {
 
 void app_main(void) {
 	esp_err_t e = nvs_flash_init();
-	if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		ESP_ERROR_CHECK(nvs_flash_erase());
-		e = nvs_flash_init();
-	}
-	ESP_ERROR_CHECK(e);
+	/* never erase nvs here: it holds the Wi-Fi a provisioned board joins.
+	 * If it won't open, Wi-Fi stays unset, the trial fails and an update
+	 * rolls back to the image that could read it. */
+	if (e != ESP_OK) ESP_LOGE(TAG, "nvs didn't open: %s", esp_err_to_name(e));
 	wifi_start();
 	rr_relay_start(&ops, trial_inputs);
 	console_start();
