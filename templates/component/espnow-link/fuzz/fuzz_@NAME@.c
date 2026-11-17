@@ -9,7 +9,9 @@
  * after a gap of up to a second and a bit, so sessions go idle and the
  * drift's one-second windows close. A frame is raw bytes or built with
  * @NAME@_encode from fields in the input, so the fuzzer gets past the
- * header and payload checks into the counting. */
+ * header and payload checks into the counting. Frames are built under
+ * the run's key, or (flag bit 5) under a forger's key one bit away: a
+ * forged frame must be counted bad and move nothing else in either end. */
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -25,6 +27,19 @@
     __FILE__, __LINE__, #c); abort(); } } while (0)
 
 #define SESSION 0x5e55107u
+
+/* the run's key and a forger's, one bit apart */
+static @NAME@_key_t K, forger;
+static void keys(void) {
+	static bool done;
+	if (done) return;
+	uint8_t k[@UNAME@_KEY];
+	for (int i = 0; i < @UNAME@_KEY; i++) k[i] = (uint8_t) (0xa0 + i);
+	@NAME@_key_init(&K, k);
+	k[0] ^= 1;
+	@NAME@_key_init(&forger, k);
+	done = true;
+}
 
 typedef struct {
 	const uint8_t *d;
@@ -44,10 +59,12 @@ static int64_t i64(rd_t *z) {
 }
 
 /* One frame from the input into buf: its length (it may be 0, or longer than
- * the radio carries). Times near now_us when the input asks, raw otherwise. */
-static size_t frame(rd_t *z, uint8_t *buf, size_t cap, int64_t now_us, uint32_t rx_session) {
+ * the radio carries). Times near now_us when the input asks, raw otherwise.
+ * *forged: built under the forger's key (flag bit 5). */
+static size_t frame(rd_t *z, uint8_t *buf, size_t cap, int64_t now_us, uint32_t rx_session, bool *forged) {
 	uint8_t k = u8(z);
 	size_t n;
+	*forged = false;
 	if (k & 1) { /* built */
 		@NAME@_frame_t f = {0};
 		f.type = (uint8_t) (1 + u8(z) % 3);
@@ -65,13 +82,16 @@ static size_t frame(rd_t *z, uint8_t *buf, size_t cap, int64_t now_us, uint32_t 
 			f.t2 = i64(z);
 			f.t3 = i64(z);
 		}
-		f.len = (uint16_t) (@UNAME@_HDR + u8(z) % (@UNAME@_MAX - @UNAME@_HDR + 1));
-		n = @NAME@_encode(&f, buf, cap);
+		f.len = (uint16_t) (@UNAME@_MIN + u8(z) % (@UNAME@_MAX - @UNAME@_MIN + 1));
+		*forged = k & 32;
+		const @NAME@_key_t *key = *forged ? &forger : &K;
+		n = @NAME@_encode(key, &f, buf, cap);
 		FUZZ_ASSERT(n == f.len);
 		@NAME@_frame_t back;
-		FUZZ_ASSERT(@NAME@_decode(buf, n, &back));
+		FUZZ_ASSERT(@NAME@_decode(key, buf, n, &back));
 		FUZZ_ASSERT(back.type == f.type && back.session == f.session && back.seq == f.seq && back.t1 == f.t1 &&
 		            back.t2 == f.t2 && back.t3 == f.t3 && back.len == f.len);
+		if (*forged) FUZZ_ASSERT(!@NAME@_decode(&K, buf, n, &back));
 		if (k & 8) { /* damaged in the air: one byte, or the length */
 			uint8_t at = u8(z), x = u8(z);
 			if (k & 16)
@@ -86,6 +106,18 @@ static size_t frame(rd_t *z, uint8_t *buf, size_t cap, int64_t now_us, uint32_t 
 		for (size_t i = 0; i < n; i++) buf[i] = u8(z);
 	}
 	return n;
+}
+
+/* A forged frame: refused, counted bad, and nothing else in either end moved
+ * (rx0 and tx0: the ends just before it) */
+static void refused(@NAME@_got_t g, const @NAME@_rx_t *rx0, const @NAME@_tx_t *tx0, const @NAME@_rx_t *rx,
+                    const @NAME@_tx_t *tx) {
+	FUZZ_ASSERT(g == @UNAME@_GOT_BAD && rx->bad == rx0->bad + 1);
+	@NAME@_rx_t r;
+	memcpy(&r, rx, sizeof(r));
+	r.bad = rx0->bad;
+	FUZZ_ASSERT(!memcmp(&r, rx0, sizeof(r)));
+	FUZZ_ASSERT(!memcmp(tx, tx0, sizeof(*tx)));
 }
 
 static void json_ok(size_t n, const char *out, size_t cap) {
@@ -104,40 +136,51 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t size) {
 	static @NAME@_tx_t tx;
 	@NAME@_rx_init(&rx);
 	@NAME@_tx_init(&tx, SESSION);
+	keys();
+	static @NAME@_rx_t rx0;
+	static @NAME@_tx_t tx0;
 	uint32_t bad = 0, pings = 0, pongs_in = 0;
 	uint8_t item[@UNAME@_MAX]; /* rx_item_t's data */
 	uint8_t air[512] = {0}; /* a damaged length may run past the frame */
 	for (int frames = 0; z.at < z.n && frames < 256; frames++) {
 		now += (int64_t) (u8(&z) % 40) * 30000;
 		if (!echo && u8(&z) & 1) @NAME@_tx_sent(&tx, @UNAME@_HDR, true, now); /* a ping of ours went out */
-		size_t len = frame(&z, air, sizeof(air), now, rx.session);
+		bool forged;
+		size_t len = frame(&z, air, sizeof(air), now, rx.session, &forged);
 		/* recv_cb */
 		if (len == 0 || len > @UNAME@_MAX) continue;
 		size_t took = @NAME@_take(item, sizeof(item), air, len);
 		FUZZ_ASSERT(took == len);
 		/* handle(): the same call the radio task makes */
 		@NAME@_frame_t pong;
-		@NAME@_got_t got = @NAME@_receive(&rx, &tx, echo, !echo, item, took, now, &pong);
+		memcpy(&rx0, &rx, sizeof(rx));
+		memcpy(&tx0, &tx, sizeof(tx));
+		@NAME@_got_t got = @NAME@_receive(&K, &rx, &tx, echo, !echo, item, took, now, &pong);
+		if (forged) refused(got, &rx0, &tx0, &rx, &tx);
 		if (got == @UNAME@_GOT_BAD)
 			bad++;
 		else {
 			/* a frame that decodes is exactly what encode makes of it */
 			@NAME@_frame_t f;
 			uint8_t again[@UNAME@_MAX];
-			FUZZ_ASSERT(@NAME@_decode(item, len, &f));
-			FUZZ_ASSERT(@NAME@_encode(&f, again, sizeof(again)) == len && !memcmp(again, item, len));
+			FUZZ_ASSERT(@NAME@_decode(&K, item, len, &f));
+			FUZZ_ASSERT(@NAME@_encode(&K, &f, again, sizeof(again)) == len && !memcmp(again, item, len));
 			if (got == @UNAME@_GOT_REPLY) {
 				FUZZ_ASSERT(echo && f.type == @UNAME@_PING);
 				FUZZ_ASSERT(pong.type == @UNAME@_PONG && pong.session == f.session && pong.seq == f.seq &&
 				            pong.t1 == f.t1 && pong.t2 == now && pong.len == f.len);
 				pong.t3 = now + 1; /* as send_frame stamps it */
-				FUZZ_ASSERT(@NAME@_encode(&pong, again, sizeof(again)) == pong.len);
+				FUZZ_ASSERT(@NAME@_encode(&K, &pong, again, sizeof(again)) == pong.len);
 				pings++;
 			} else if (got == @UNAME@_GOT_USED) {
 				FUZZ_ASSERT(echo ? f.type == @UNAME@_DATA : f.type == @UNAME@_PONG);
 				if (!echo) pongs_in++;
 			} else
-				FUZZ_ASSERT(got == @UNAME@_GOT_OTHER && (echo ? f.type == @UNAME@_PONG : f.type != @UNAME@_PONG));
+				/* the echo's: a PONG, or a PING it already answered (counted a ping_dup) */
+				FUZZ_ASSERT(got == @UNAME@_GOT_OTHER &&
+				            (echo ? f.type == @UNAME@_PONG || (f.type == @UNAME@_PING && rx.ping_dup == rx0.ping_dup + 1)
+				                  : f.type != @UNAME@_PONG));
+			if (!(echo && f.type == @UNAME@_PING && got == @UNAME@_GOT_OTHER)) FUZZ_ASSERT(rx.ping_dup == rx0.ping_dup);
 		}
 		/* the counts after every frame */
 		FUZZ_ASSERT(rx.bad == bad && rx.pings == pings);

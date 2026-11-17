@@ -11,8 +11,13 @@
  * 247-byte MTU, find the service by discovery, turn notifications on and
  * run. Frames are the same as espnow-link's (@NAME@.h), written without
  * response one way and notified the other. No pairing, no bonding, no
- * encryption: anything that carries commands needs LE Secure Connections
- * or keys at the application layer.
+ * link encryption: each frame carries @NAME@.h's tag under the run's key
+ * instead, so a stranger's forged or seq-jumped frames count as bad and
+ * move nothing. Pairing would not do: Just Works (the only mode two
+ * headless boards have) is open to a man in the middle, and a bond is per
+ * pair of boards where the key is per run. The frames aren't secret:
+ * anything that must be needs LE Secure Connections or encryption at the
+ * application layer.
  *
  * Bluetooth must be up first: the controller enabled in a mode with BLE and
  * Bluedroid enabled (@NAME@_ble_bt_init does both when nothing else has).
@@ -44,13 +49,15 @@
 #include "@NAME@_bleutil.h"
 #include "esp_err.h"
 
+#include "@NAME@.h" /* @UNAME@_KEY */
+
 typedef enum { @UNAME@_BLE_ECHO = 0, @UNAME@_BLE_PING = 1, @UNAME@_BLE_FLOOD = 2 } @NAME@_ble_role_t;
 
 typedef struct {
 	@NAME@_ble_role_t role;
 	uint8_t peer[6];   /* the other board's Wi-Fi station MAC (@NAME@_parse_mac) */
 	uint32_t rate_hz;  /* ping: 1-100 a second (0: 20) */
-	uint32_t len;      /* frame bytes, @UNAME@_HDR..@UNAME@_BLE_PAYLOAD (0: 64, flood the most);
+	uint32_t len;      /* frame bytes with the tag, @UNAME@_MIN..@UNAME@_BLE_PAYLOAD (0: 64, flood the most);
 	                    * a link whose MTU won't carry it ends the run ("fail") */
 	uint32_t count;    /* ping and flood: frames sent, then the run ends itself (0: until
 	                    * stopped). Echo runs until stopped */
@@ -62,6 +69,11 @@ typedef struct {
 	 * from it, and don't write flash or NVS (the worker's stack may be in
 	 * PSRAM): post to a task of your own for anything more than a flag */
 	void (*on_end)(bool ok);
+	uint8_t key[@UNAME@_KEY]; /* the run's frame key, the same at both ends: fresh for each run
+	                           * and from the Hive's provisioning (or whoever starts the run),
+	                           * never a constant in the code. All zero is refused. start keeps
+	                           * it only as the HMAC states and wipes them at the run's end;
+	                           * the caller wipes its own copy (@NAME@_wipe) */
 } @NAME@_ble_cfg_t;
 
 /* the controller (BLE only or dual mode, as the sdkconfig has it) and

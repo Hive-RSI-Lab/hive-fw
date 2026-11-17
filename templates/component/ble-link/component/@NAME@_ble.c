@@ -73,6 +73,7 @@ static StaticTask_t worker_tcb;
 static @NAME@_tx_t *tx;
 static @NAME@_rx_t *rx;
 static rx_item_t *cb_it; /* the callbacks' item: they all run on Bluedroid's task, one at a time */
+static @NAME@_key_t *key; /* the run's frame key: never logged or reported, wiped as the run ends */
 static bool cbs_registered;
 static esp_gatt_if_t gatts_if = ESP_GATT_IF_NONE, gattc_if = ESP_GATT_IF_NONE;
 static uint16_t h_svc, h_val, h_cccd; /* the server's handles */
@@ -446,7 +447,7 @@ static bool send_frame(@NAME@_frame_t *f) {
 	int64_t t = esp_timer_get_time();
 	if (f->type == @UNAME@_PING) f->t1 = t;
 	else if (f->type == @UNAME@_PONG) f->t3 = t;
-	size_t n = @NAME@_encode(f, buf, sizeof(buf));
+	size_t n = @NAME@_encode(key, f, buf, sizeof(buf));
 	esp_err_t e = ESP_FAIL;
 	if (n && connected) {
 		if (cfg.role == @UNAME@_BLE_ECHO)
@@ -461,7 +462,7 @@ static bool send_frame(@NAME@_frame_t *f) {
 
 static void handle(const rx_item_t *it) {
 	@NAME@_frame_t pong;
-	switch (@NAME@_receive(rx, tx, cfg.role == @UNAME@_BLE_ECHO, cfg.role != @UNAME@_BLE_ECHO, it->data, it->len,
+	switch (@NAME@_receive(key, rx, tx, cfg.role == @UNAME@_BLE_ECHO, cfg.role != @UNAME@_BLE_ECHO, it->data, it->len,
 	                       it->t_us, &pong)) {
 	case @UNAME@_GOT_REPLY:
 		send_frame(&pong);
@@ -515,6 +516,7 @@ static void teardown(void) {
 	while ((connected || opening) && esp_timer_get_time() < until) xSemaphoreTake(closed_sem, pdMS_TO_TICKS(100));
 	phase_end = phase;
 	phase = PH_IDLE;
+	if (key) @NAME@_key_wipe(key); /* the run's key goes with the run */
 }
 
 /* the run; true when it ended by itself (on_end is due) */
@@ -653,7 +655,8 @@ static esp_err_t setup(void) {
 		if (!tx) tx = big(sizeof(*tx)); /* ~4 KB: the round-trip histogram */
 		if (!rx) rx = big(sizeof(*rx));
 		if (!cb_it) cb_it = big(sizeof(*cb_it));
-		if (!qmem || !stack || !reg_sem || !space_sem || !closed_sem || !tx || !rx || !cb_it) {
+		if (!key) key = big(sizeof(*key));
+		if (!qmem || !stack || !reg_sem || !space_sem || !closed_sem || !tx || !rx || !cb_it || !key) {
 			free(qmem);
 			free(stack);
 			return ESP_ERR_NO_MEM;
@@ -696,20 +699,37 @@ static esp_err_t setup(void) {
 	return ESP_OK;
 }
 
+static esp_err_t start(@NAME@_ble_cfg_t *nc, const uint8_t k[@UNAME@_KEY], bool any);
+
 esp_err_t @NAME@_ble_start(const @NAME@_ble_cfg_t *c) {
 	if (!c) return ESP_ERR_INVALID_ARG;
 	if (alive || connected || opening) return ESP_ERR_INVALID_STATE; /* a run, or the last one's link */
 	@NAME@_ble_cfg_t n = *c;
+	/* the key lives on only in key (as HMAC states): not in a cfg copy */
+	uint8_t k[@UNAME@_KEY], any = 0;
+	memcpy(k, n.key, sizeof(k));
+	@NAME@_wipe(n.key, sizeof(n.key));
+	for (size_t i = 0; i < sizeof(k); i++) any |= k[i];
+	esp_err_t e = start(&n, k, any);
+	@NAME@_wipe(k, sizeof(k));
+	@NAME@_wipe(&n, sizeof(n));
+	return e;
+}
+
+static esp_err_t start(@NAME@_ble_cfg_t *nc, const uint8_t k[@UNAME@_KEY], bool any) {
+	@NAME@_ble_cfg_t n = *nc;
+	if (!any) return ESP_ERR_INVALID_ARG; /* all zero: no key was given */
 	if (!n.rate_hz) n.rate_hz = 20;
 	if (!n.len) n.len = n.role == @UNAME@_BLE_FLOOD ? @UNAME@_BLE_PAYLOAD : 64;
 	if (!n.scan_s) n.scan_s = 20;
 	uint16_t units = n.interval_ms ? @NAME@_interval_units(n.interval_ms) : 0;
-	if (n.role > @UNAME@_BLE_FLOOD || n.rate_hz > 100 || n.len < @UNAME@_HDR || n.len > @UNAME@_BLE_PAYLOAD ||
+	if (n.role > @UNAME@_BLE_FLOOD || n.rate_hz > 100 || n.len < @UNAME@_MIN || n.len > @UNAME@_BLE_PAYLOAD ||
 	    n.scan_s < 3 || n.scan_s > 60 || (n.interval_ms && !units))
 		return ESP_ERR_INVALID_ARG;
 	esp_err_t e = setup();
 	if (e != ESP_OK) return e;
 	cfg = n;
+	@NAME@_key_init(key, k); /* the worker is idle */
 	iv_units = units;
 
 	esp_read_mac(self, ESP_MAC_WIFI_STA);
@@ -741,6 +761,7 @@ esp_err_t @NAME@_ble_start(const @NAME@_ble_cfg_t *c) {
 		if (!advertise()) {
 			run = alive = false;
 			phase = PH_IDLE;
+			@NAME@_key_wipe(key);
 			return ESP_FAIL;
 		}
 	} else {
@@ -756,6 +777,7 @@ esp_err_t @NAME@_ble_start(const @NAME@_ble_cfg_t *c) {
 		if ((e = esp_ble_gap_set_scan_params(&sp)) != ESP_OK) {
 			run = alive = false;
 			phase = PH_IDLE;
+			@NAME@_key_wipe(key);
 			return e;
 		}
 	}

@@ -4,11 +4,14 @@ From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
 
 - `@NAME@.c` / `include/@NAME@.h`: plain C, host-tested. The frame both ends
   speak: a 38-byte header (magic 2, version 1, type 1, the frame's total
-  length 2, session 4, sequence 4, three 8-byte timestamps) and a payload
-  pattern derived from every byte of the sequence number. A frame whose
+  length 2, session 4, sequence 4, three 8-byte timestamps), a payload
+  pattern derived from every byte of the sequence number, and an 8-byte
+  tag: HMAC-SHA256 of the header under the run's key (`cfg.key`, 16 bytes
+  from the project's provisioning, fresh for each run, never a constant in
+  the code; an all-zero key is refused). A frame whose tag fails, whose
   length field isn't the bytes received (truncated or padded) or whose
-  payload doesn't match is counted bad, not used. Frame version 2 (version
-  1 had a 36-byte header without the length). A DATA frame of another
+  payload doesn't match is counted bad, not used. Frame version 3 (2 had
+  no tag, 1 a 36-byte header without the length). A DATA frame of another
   session counts as `stray` while the current session was heard within the
   last second; after a second of silence the new session is adopted. Also
   a 1024-frame duplicate window, the sink's counts
@@ -37,9 +40,10 @@ From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
   overflowed the 64-bit round-trip sum (`tx_pong` now uses only times an
   echo could have written, and a delay up to `@UNAME@_RTT_MAX_US`), and
   sequence number 0xFFFFFFFF wrapped the duplicate window's top to 0 and
-  reset the expected count (`seen` now refuses it). Frames carry no
-  authentication: anyone who knows the session can still bend the RTT
-  and drift figures within those bounds.
+  reset the expected count (`seen` now refuses it). A third input,
+  `regress-forged`, is a frame tagged under a key one bit off the run's:
+  it must count as bad and move nothing else (the harness builds such
+  frames for any input with flag bit 32 set).
 
 Rules the lab found:
 
@@ -96,9 +100,21 @@ Rules the lab found:
   then `esp_bluedroid_enable()`;
   profiles such as the A2DP sink have to be set up again (the Lite
   restarts). A connected phone is dropped.
-- Only frames from the configured peer are looked at; nothing is
-  forwarded. Encryption (a PMK/LMK) is off in the template: turn it on for
-  anything that carries commands.
+- Only frames from the configured peer are looked at, but a MAC is easy to
+  forge, so the tag is what keeps a stranger in radio range from moving the
+  counts with a made-up frame or a jump in the sequence. Why a tag and not
+  ESP-NOW's own encryption (LMK): an LMK frame that fails is dropped in the
+  driver unseen, so a forger can't be counted; encrypted peers are capped
+  (6 by default, 17 at most); Espressif documents no replay check for it;
+  and it does nothing for `ble-link`, which shares these frames. The tag
+  costs 8 bytes a frame (3.2% of a 250-byte frame) and two SHA-256 blocks
+  whatever the length. In the lab (hifi-lite-lab `esp32-lab.md`) a third
+  board forging the flooder's frames under its own key had all 539 counted
+  bad and the loss unchanged, and the tagged image carried 2.8 Mbit/s
+  against 3.8 untagged, an upper bound on the cost (the images differed in
+  other ways too). The tag doesn't stop a replay within a run (a dup, see
+  `@NAME@.h`) or jamming: 30 forged frames a second cut a flood ninefold.
+  The frames aren't secret: anything that must be needs encryption too.
 - Internal RAM is the scarce part, not flash. On the Lite (Wi-Fi + Bluetooth
   + audio) about 13 KB of internal RAM was left, and the first lab image
   could not start a run: a plain `xQueueCreate` of 32 frames (~8 KB) and a
@@ -156,4 +172,4 @@ Rules the lab found:
 
 Use: `fw new component NAME --from espnow-link`, call
 `NAME_espnow_start(&cfg)` on both boards after `esp_wifi_start()` (echo on
-one, ping or flood on the other), `NAME_espnow_result(buf, cap)` for the JSON.
+one, ping or flood on the other, the same fresh `cfg.key` on both), `NAME_espnow_result(buf, cap)` for the JSON.
