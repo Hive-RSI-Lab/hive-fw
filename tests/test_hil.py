@@ -399,7 +399,7 @@ class Exits(unittest.TestCase):
         d = self.doc()
         self.assertEqual((d["exit"], d["stopped"]), (1, True))
         self.assertEqual(d["results"][-1]["name"], "stopped")
-        self.assertIn("in the after check: 9 of 9 cases were sent", d["results"][-1]["why"])
+        self.assertIn("in the after check: 8 of 9 cases were sent", d["results"][-1]["why"])
         self.assertIn("in the after check", d["summary"])
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
@@ -417,7 +417,7 @@ class Exits(unittest.TestCase):
         d = self.doc()
         self.assertTrue(d["stopped"])
         why = d["results"][-1]["why"]
-        self.assertIn("after the bench stopped (3 of 9 cases were sent): the run stopped at", why)
+        self.assertIn("after the bench stopped (2 of 9 cases were sent): the run stopped at", why)
         self.assertNotIn("after check", why)
 
     def test_a_line_the_bench_only_queued_is_not_counted_as_sent(self):
@@ -430,10 +430,10 @@ class Exits(unittest.TestCase):
             return clear(timeout)
         board.clear = clear_then_term
         self.assertEqual(self.main(), 1)
-        self.assertIn("(2 of 9 cases were sent)", self.doc()["results"][-1]["why"])
+        self.assertIn("(1 of 9 cases were sent)", self.doc()["results"][-1]["why"])
 
     def test_sigterm_in_the_after_check_counts_skipped_cases(self):
-        """Cases skipped for a failed save are not counted as sent, even when the run reaches the after check."""
+        """Cases skipped (a failed save, an unfilled $var) or refused by the bench are not counted as sent."""
         board = self.fake(FakeBoard())
         call = board.call
         diags = []
@@ -451,9 +451,7 @@ class Exits(unittest.TestCase):
         self.assertEqual(self.main(), 1)
         d = self.doc()
         why = d["results"][-1]["why"]
-        skipped = sum(str(r.get("why", "")).startswith("not sent") for r in d["results"])
-        self.assertGreater(skipped, 0)
-        self.assertIn(f"in the after check: {9 - skipped} of 9 cases were sent", why)
+        self.assertIn("in the after check: 6 of 9 cases were sent", why)   # not ota, unknown (unsaved), restore (unfilled)
 
     def test_json_dir_is_made(self):
         self.out = self.d / "new" / "deeper" / "out.json"

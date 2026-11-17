@@ -293,8 +293,10 @@ UNSENT = ("only queued, not sent", "the bench dropped it")   # Bench.call errors
 
 
 def sent(rows):
-    """How many case rows went out to the board: not the skipped ones, nor the one the bench never sent."""
+    """How many case rows went out to the board: not the skipped ones, the ones the bench refused (status -1),
+    nor the one the bench never sent."""
     return sum(not str(r.get("why", "")).startswith("not sent") and not r.get("unsent")
+               and not (isinstance(r.get("answer"), dict) and r["answer"].get("status") == -1)
                for r in rows if r.get("suite") != "after")
 
 
@@ -492,7 +494,7 @@ def _go(a, doc, done):
     except Stopped as e:
         dropped = bench.clear(timeout=CLEAR_ON_STOP_S)
         n_sent = sent(res)
-        why = f"stopped by {e} after {n_sent} of {n_all} cases were sent; the rest were not"
+        why = f"stopped by {e} after {n_sent} of {n_all} cases were sent" + ("" if at.get("case") else "; the rest were not")
         if at.get("after"):
             why = f"stopped by {e} in the after check: {n_sent} of {n_all} cases were sent, but the restart and heap were not checked"
         elif at.get("bench_stopped"):
