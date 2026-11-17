@@ -26,6 +26,7 @@ class Templates(unittest.TestCase):
         have = new.templates()
         self.assertIn("plain", have)
         self.assertIn("espnow-link", have)
+        self.assertIn("ble-link", have)
         for t, summary in have.items():
             self.assertTrue(summary, t)
             self.assertTrue(list((new.TEMPLATES / t / "host_test").glob("test_*.c")), t)
@@ -46,6 +47,73 @@ class Templates(unittest.TestCase):
         self.assertEqual(json.loads((d / "fw.json").read_text())["idf"], "v5.5.6")
         self.assertTrue((d / "components" / "espnow-link" / "espnow_link_espnow.c").is_file())
         self.assertTrue((d / "test" / "host" / "test_espnow_link.c").is_file())
+
+    def test_check_project_adds_sdkconfig(self):
+        d = new.check_project("ble-link", "v4.4.8", Path(tempfile.mkdtemp()) / "p")
+        self.assertTrue((d / "components" / "ble-link" / "ble_link_ble.c").is_file())
+        self.assertIn("CONFIG_BT_ENABLED=y", (d / "sdkconfig.defaults").read_text().splitlines())
+
+    def test_sdkconfig_added_once_and_never_over_the_projects(self):
+        d = copy_hello()
+        sd = d / "sdkconfig.defaults"
+        sd.write_text(sd.read_text().rstrip("\n") + "\n# CONFIG_BT_GATTC_ENABLE is not set")  # no final newline
+        added = new.add_sdkconfig("ble-link", "radio", d)
+        self.assertIn("CONFIG_BT_ENABLED=y", added)
+        self.assertNotIn("CONFIG_BT_GATTC_ENABLE=y", added)
+        lines = sd.read_text().splitlines()
+        self.assertIn("# CONFIG_BT_GATTC_ENABLE is not set", lines)
+        self.assertIn("# radio (fw new, template ble-link)", lines)
+        self.assertIn("CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y", lines)
+        before = sd.read_text()
+        self.assertEqual(new.add_sdkconfig("ble-link", "radio", d), [])
+        self.assertEqual(sd.read_text(), before)
+        self.assertEqual(new.add_sdkconfig("plain", "knob", d), [])
+        e = copy_hello()
+        (e / "sdkconfig.defaults").unlink()
+        self.assertTrue(new.add_sdkconfig("ble-link", "radio", e))
+        self.assertTrue((e / "sdkconfig.defaults").read_text().startswith("# radio"))
+
+    def test_sdkconfig_old_names_count_as_set(self):
+        d = copy_hello()
+        sd = d / "sdkconfig.defaults"
+        sd.write_text(sd.read_text() + "CONFIG_BLUEDROID_ENABLED=y\n# CONFIG_GATTS_ENABLE is not set\n")
+        added = new.add_sdkconfig("ble-link", "radio", d)
+        self.assertIn("CONFIG_BT_GATTC_ENABLE=y", added)
+        self.assertNotIn("CONFIG_BT_BLUEDROID_ENABLED=y", added)
+        self.assertNotIn("CONFIG_BT_GATTS_ENABLE=y", added)
+
+    def test_sdkconfig_choice_conflict_is_a_warning(self):
+        d = copy_hello()
+        sd = d / "sdkconfig.defaults"
+        sd.write_text(sd.read_text() + "CONFIG_BT_NIMBLE_ENABLED=y\n")
+        added = new.add_sdkconfig("ble-link", "radio", d)
+        self.assertIn("CONFIG_BT_ENABLED=y", added)
+        self.assertNotIn("CONFIG_BT_BLUEDROID_ENABLED=y", added)
+        w = new.sdkconfig_warnings("ble-link", d)
+        self.assertEqual(len(w), 1)
+        self.assertIn("CONFIG_BT_NIMBLE_ENABLED", w[0])
+        e = copy_hello()
+        (e / "sdkconfig.defaults").write_text("CONFIG_NIMBLE_ENABLED=y\n")  # the old name
+        self.assertTrue(new.sdkconfig_warnings("ble-link", e))
+        self.assertEqual(new.sdkconfig_warnings("ble-link", copy_hello()), [])
+        f = copy_hello()
+        (f / "sdkconfig.defaults").write_text("# CONFIG_BT_NIMBLE_ENABLED is not set\n")
+        self.assertEqual(new.sdkconfig_warnings("ble-link", f), [])
+
+    def test_sdkconfig_goes_to_the_project_with_into(self):
+        d = copy_hello()
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = new.main(["component", "radio", str(d), "--from", "ble-link", "--into", str(d / "lib" / "radio")])
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertTrue((d / "lib" / "radio" / "radio_ble.c").is_file())
+        self.assertIn("CONFIG_BT_ENABLED=y", (d / "sdkconfig.defaults").read_text().splitlines())
+        self.assertFalse((d / "lib" / "radio" / "sdkconfig.defaults").exists())
+
+    def test_template_sdkconfig_lines_are_options(self):
+        for t in new.templates():
+            for ln in new.template_json(t).get("sdkconfig", []):
+                self.assertTrue(new._key(ln), (t, ln))
 
     def test_check_unknown_template(self):
         err = io.StringIO()
@@ -85,6 +153,13 @@ class Instantiate(unittest.TestCase):
         self.assertTrue((d / "components" / "espnow-link" / "espnow_link_espnow.c").is_file())
         r = self.run_fw("new", "component", "knob", str(d))
         self.assertIn("from template plain", r.stdout)
+        self.assertNotIn("CONFIG_BT_ENABLED", (d / "sdkconfig.defaults").read_text())
+        (d / "sdkconfig").write_text("")
+        r = self.run_fw("new", "component", "ble-link", str(d))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("sdkconfig.defaults: added CONFIG_BT_ENABLED=y", r.stdout)
+        self.assertIn("set those in menuconfig too", r.stdout)
+        self.assertIn("CONFIG_BT_ENABLED=y", (d / "sdkconfig.defaults").read_text())
 
     def test_into_and_host_tests_dir(self):
         d = copy_hello()
