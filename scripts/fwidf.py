@@ -184,6 +184,15 @@ def cmd_build(args: list[str]) -> int:
             if q["wifi"] != "off":
                 return die(f"qemu.wifi: only \"off\" (QEMU has no radio), not {q['wifi']!r}")
             shims.append((fwlib.NOWIFI_SHIM, fwlib.NOWIFI_WRAPS, []))
+        if q.get("gpio") or q.get("scenarios"):
+            try:
+                mask, level = fwlib.gpio_levels(q.get("gpio") or {})
+            except ValueError as e:
+                return die(str(e))
+            shims.append((fwlib.GPIO_SHIM, ["gpio_get_level"],
+                          [f"-DFW_GPIO_MASK={mask:#x}ULL", f"-DFW_GPIO_LEVEL={level:#x}ULL"]))
+        if q.get("scenarios"):
+            shims.append((fwlib.HEAP_SHIM, ["vTaskDelay"], []))
         link = []
         if shims:
             objs = [compile_shim(env, bq, pins, src_c, defs) for src_c, _, defs in shims]
@@ -206,8 +215,9 @@ def cmd_build(args: list[str]) -> int:
 def compile_shim(env: dict, bq: Path, pins: dict, src: Path, defines: list[str]) -> Path:
     """A qemu/*.c shim compiled with the project's own compiler into
     build-qemu/. The object's name carries a hash of its source and flags, so
-    a change shows in the link flags and cmake relinks."""
-    flags = ["-c", "-Os", "-mlongcalls", f"-DFW_IDF_MAJOR={fwlib.idf_major(pins['idf'])}"] + defines
+    a change shows in the link flags and cmake relinks. -g gives gdb the
+    types of the shims' variables, for scenarios' set steps."""
+    flags = ["-c", "-Os", "-g", "-mlongcalls", f"-DFW_IDF_MAJOR={fwlib.idf_major(pins['idf'])}"] + defines
     key = hashlib.sha256(src.read_bytes() + "\0".join(flags).encode()).hexdigest()[:10]
     obj = bq / f"fw-{src.stem}-{key}.o"
     if obj.is_file():

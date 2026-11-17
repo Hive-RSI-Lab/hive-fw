@@ -87,7 +87,9 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. Don't set `"host_tests": "."` in an IDF project: the project's own `CMakeLists.txt` is IDF's, so the runner takes it and fails; use a subdirectory such as `test/host`. Keep host builds in their own dir (`build-host/`), not `build/`: `idf.py` refuses a `build/` that has no CMake cache of its own. |
 | `fw new component NAME [P] [--from T] [--into DIR] [--force]` | Starts a part from a template that has worked on a board: copies `templates/component/<T>/component/` into `P/components/NAME` (or `--into`, inside the project) and its host test into the `host_tests` dir, wired by `fw-src` lines, so `fw host-test P -k test_NAME` passes at once. `T` defaults to NAME when a template has that name, else `plain`. `@NAME@` (the C name, `-` becomes `_`), `@UNAME@`, `@COMPONENT@` and `@DIR@` are filled in file names and contents. It writes nothing over an existing file without `--force`. Each template's `TEMPLATE.md` says what it does and what it measured on the board it came from. `fw new list` lists them. |
 | `fw new check [T ...] [--keep]` | Proves the templates still build: each goes into a copy of `examples/hello` once per IDF its `template.json` lists (`{"idf": ["v4.4.8", "v5.5.6"]}`), then through `fw build` and its host test. A host test can't see the IDF side (a callback whose shape changed between IDF versions, a header that moved), so run this after editing a template. Slow; needs those IDFs. |
-| `fw qemu [P] [--http 'GET /path' ...] [--hold S]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
+| `fw coverage [P] [--src PATH] [--lines] [--json] [--min PCT]` | Line, branch and function coverage of what the host tests run (gcc `--coverage`, gcov's JSON), merged across test programs so a file two tests share counts once. It builds each `test_*.c` itself, or runs a test Makefile's `coverage` target (which must leave its `.gcda` files under the test dir), or reads `--gcda DIR`. `--src` limits the report to paths under the project; `--lines` lists the lines no test ran; `--min` fails under that line percentage. |
+| `fw fuzz [P] [--secs N] [--jobs N] [--only NAME] [--new NAME] [--replay NAME FILE]` | libFuzzer harnesses for the portable code, on the host: each `fuzz_*.c` in the fuzz dir (fw.json `fuzz_tests`, default `test/fuzz`) names its sources in the same `// fw-src:` lines as a host test and is built with clang, libFuzzer, ASan and UBSan. It runs each for `--secs` (all at once with `--jobs`), growing a corpus in `build-fuzz/corpus/NAME` from the checked-in `seeds/NAME/`, with a dictionary of the sources' string literals plus `NAME.dict`. A crash prints the sanitizer report, keeps its input as `build-fuzz/crash-NAME-*` and a `--replay` line; check the input in as `seeds/NAME/regress-*` once fixed. `--new NAME` writes a harness from the template. No clang that links libFuzzer (`$CLANG`, `~/.local/opt/LLVM-*/bin/clang`, `PATH`): exits 3. |
+| `fw qemu [P] [--http 'GET /path' ...] [--hold S] [--scenario NAME\|all\|list]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
 | `fw flash [P] --port PORT` | `idf.py -p PORT flash`. `PORT` is `/dev/ttyUSB0` for a board on this machine, or `rfc2217://host:4000` for a board elsewhere. `FW_PORT` sets a default. |
 | `fw publish [P] [--name N] [--build DIR] [--no-post] [-- ARGS]` | Hands the build to a Hive's board bench, where the person flashes it from their browser: runs `serialtab publish BUILD NAME --chip CHIP [--profile bench.json] --post`. NAME is fw.json `"name"` or the folder's name; CHIP comes from `"target"`; the profile is fw.json `"bench"` or `bench.json` beside fw.json. The bench posts a "flash this build" link in your thread (`--no-post` leaves it out). fw doesn't carry the bench: without `serialtab` (on `PATH` or `$FW_SERIALTAB`) it says so and exits 3, and `fw flash` still works over a port. |
 | `fw monitor [P] --port PORT [--seconds 15] [--expect RE]` | Resets the chip through DTR/RTS, reads the UART for a while with no tty, and gives the same verdict as `fw qemu`. The log goes to `build/fw-monitor.log`. |
@@ -154,6 +156,8 @@ code is unchanged, and the board's `build/` never sees the shim.
 |---|---|---|
 | `"eth": "emac"` | `esp_eth_mac_new_esp32`, `esp_eth_phy_new_{lan87xx,ip101,rtl8201,ksz80xx,...}` | QEMU's Ethernet is open_eth, not the EMAC ([openeth.c](../qemu/openeth.c)) |
 | `"adc1": 0` or `{"6": 1700}` | `adc1_get_raw`, which returns the raw value given for the channel (else 0) | no SAR ADC: the read spins forever holding a spinlock, and the core's tick stops, so the boot hangs silently ([adc.c](../qemu/adc.c)) |
+| `"gpio": {"4": 0}` (or any `"scenarios"`) | `gpio_get_level`, which returns the level given for the pin, else the real pin; `fw_gpio_level`/`fw_gpio_mask` can be changed at run time | inputs QEMU's GPIO never drives (a PD power-good line, an amp's fault pin) ([gpio.c](../qemu/gpio.c)) |
+| `"scenarios"` | `vTaskDelay`, which first hogs or gives back heap to match `fw_heap_leave` | a heap squeeze on demand ([heap.c](../qemu/heap.c)) |
 | `"wifi": "off"` | `esp_wifi_start`, `_stop`, `_connect`, `_disconnect`, `_scan_start`, `_scan_stop`, which all succeed | no radio: PHY calibration panics with `LoadStorePIFAddrError` in `register_chipv7_phy` ([nowifi.c](../qemu/nowifi.c)) |
 
 Two more keys shape the flash image `fw qemu` boots, with no rebuild:
@@ -167,8 +171,45 @@ Two more keys shape the flash image `fw qemu` boots, with no rebuild:
   bootloader starts it instead of the factory app. squeezelite's factory
   app is its recovery, which skips Ethernet.
 
+- `"nvs_fill": {"settings": "config"}` pads that namespace until the
+  partition is full: every entry of every page but the one NVS keeps free
+  is used, so the firmware's next new key fails with
+  `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. Mostly a scenario override (below).
+
+### Fault scenarios
+
+`"qemu": {"scenarios": {"NAME": {"about": "...", "overrides": {...},
+"steps": [...]}}}` are runs of their own: `fw qemu --scenario NAME` (or
+`all`, or `list`). Each boots a fresh image (with `overrides` laid over the
+qemu block: `nvs`, `nvs_fill`, `boot`, `psram`, `flash`, `expect`,
+`timeout`, `settle`), waits for the expect line, then takes its steps in
+order and fails at the first that doesn't hold. Each logs to
+`build/fw-qemu-NAME.log`; `fw qemu` prints one line per scenario and a sum.
+The steps:
+
+- an HTTP request as in `"http"`, plus `"retry": N` (ask again once a
+  second until it matches) and `"status": "any"` (any reply, but there
+  must be one);
+- `{"set": "fw_adc1_raw[6] = 1250"}` or a list: gdb attaches through
+  QEMU's gdb stub, sets each, and detaches. The shims' variables
+  (`fw_adc1_raw[]`, `fw_gpio_level` for pins in `fw_gpio_mask`, which
+  `"gpio"` sets, and `fw_heap_leave`) are how a fault is
+  injected: a brown-out is the ADC reading a sagging rail, a lost PD
+  contract is the power-good pin going high, a squeeze is `fw_heap_leave`.
+  Any global of the firmware's works too. Needs `xtensa-esp32-elf-gdb`
+  (from `fw setup`);
+- `{"wait": S}`;
+- `{"send": "console line", "expect": "regex", "timeout": S}` on UART0;
+- `{"log": "regex", "timeout": S}`: a line the UART showed since the step
+  before began (the fault's effect, not a boot line that happens to match),
+  or shows within S; `"since": "boot"` searches the whole log.
+
+Faults with no variable to set: QEMU has no I2S, so a tone is an output
+stall; a full flash is `"overrides": {"nvs_fill": ...}`.
+The hifi receiver's `firmware/fw.json` has six scenarios to copy.
+
 A boot that seems to stop with no fatal line, its log timestamps frozen, is
-usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp::1234` and
+usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp:127.0.0.1:1234` and
 `xtensa-esp32-elf-gdb -ex 'target remote :1234' -ex 'thread apply all bt'`
 to see where. That's how the ADC wait was found.
 

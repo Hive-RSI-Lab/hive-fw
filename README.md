@@ -6,7 +6,7 @@ It is a handful of small commands that agents combine as they need, not a
 pipeline.
 
 - `bin/fw` runs the commands: `setup`, `doctor`, `build`, `idf`,
-  `host-test`, `new`, `qemu`, `flash`, `publish`, `monitor`, `ports`, `bootlog`, `constraints`, `pins`, `dts`, `stm32`,
+  `host-test`, `new`, `coverage`, `fuzz`, `qemu`, `flash`, `publish`, `monitor`, `ports`, `bootlog`, `constraints`, `pins`, `dts`, `stm32`,
   `test`, `check-all` and `score`.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.

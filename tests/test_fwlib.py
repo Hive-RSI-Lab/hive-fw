@@ -66,5 +66,21 @@ class Roots(unittest.TestCase):
             self.assertIsNone(fwlib.find_idf("v5.5.6"))
 
 
+class Gdb(unittest.TestCase):
+    def test_newest_that_runs(self):
+        root = Path(tempfile.mkdtemp())
+        tools = root / "espressif" / "tools" / "xtensa-esp-elf-gdb"
+        for ver, works in (("9.2_20200820", True), ("17.1_20250101", True), ("12.1_20221002", True),
+                           ("18.0_20260101", False)):
+            b = tools / ver / "xtensa-esp-elf-gdb" / "bin" / "xtensa-esp32-elf-gdb"
+            b.parent.mkdir(parents=True)
+            b.write_text("#!/bin/sh\nexit %d\n" % (0 if works else 1))
+            b.chmod(0o755)
+        with mock.patch.object(fwlib, "roots", return_value=[root]), \
+                mock.patch.object(fwlib.shutil, "which", return_value=None):
+            self.assertEqual(fwlib.find_gdb().parts[-4], "17.1_20250101")
+            self.assertIsNone(fwlib.find_gdb("esp32s3"))
+
+
 if __name__ == "__main__":
     unittest.main()

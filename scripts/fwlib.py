@@ -90,6 +90,26 @@ def find_qemu() -> Path | None:
     return None
 
 
+def find_gdb(chip: str = "esp32") -> Path | None:
+    """xtensa-<chip>-elf-gdb, the newest that runs, from the IDF tools under
+    each root (fw setup installs it with the IDF), else PATH."""
+    name = f"xtensa-{chip}-elf-gdb"
+    cands = []
+    for r in roots():
+        cands += sorted((r / "espressif" / "tools" / "xtensa-esp-elf-gdb").glob(f"*/xtensa-esp-elf-gdb/bin/{name}"),
+                        key=lambda x: [int(n) if n.isdigit() else 0 for n in re.split(r"[._]", x.parts[-4])],
+                        reverse=True)
+    if shutil.which(name):
+        cands.append(Path(shutil.which(name)))
+    for c in cands:
+        try:
+            if subprocess.run([str(c), "--version"], capture_output=True, timeout=30).returncode == 0:
+                return c
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
 def qemu_env(qemu: Path) -> dict[str, str]:
     lib = qemu.parent.parent.parent / "lib"
     env = dict(os.environ)
@@ -149,7 +169,8 @@ def qemu_variant(pins: dict) -> bool:
     """Whether the QEMU boot needs a build of its own: config lines only
     QEMU wants (a chip-revision floor QEMU meets, say), or a shim."""
     q = pins.get("qemu", {})
-    return bool(q.get("sdkconfig") or q.get("eth") or "adc1" in q or q.get("wifi"))
+    return bool(q.get("sdkconfig") or q.get("eth") or "adc1" in q or q.get("wifi")
+                or q.get("gpio") or q.get("scenarios"))
 
 
 def adc1_raw(spec) -> list[int]:
@@ -167,6 +188,19 @@ def adc1_raw(spec) -> list[int]:
     return vals
 
 
+def gpio_levels(spec) -> tuple[int, int]:
+    """fw.json qemu.gpio, {"pin": 0 or 1}, as the shim's (mask, levels)."""
+    if not isinstance(spec, dict):
+        raise ValueError(f"qemu.gpio: {{\"pin\": 0 or 1}}, not {spec!r}")
+    mask = level = 0
+    for pin, v in spec.items():
+        if not (str(pin).isdigit() and int(pin) < 64) or v not in (0, 1) or isinstance(v, float):
+            raise ValueError(f"qemu.gpio: pin {pin!r} -> {v!r}: want 0-63 -> 0 or 1")
+        mask |= 1 << int(pin)
+        level |= int(v) << int(pin)
+    return mask, level
+
+
 def qemu_build_dir(src: Path, pins: dict) -> Path:
     """build-qemu/ for a firmware with a QEMU variant; else the build itself."""
     return src / "build-qemu" if qemu_variant(pins) else src / "build"
@@ -179,11 +213,19 @@ def qemu_build_dir(src: Path, pins: dict) -> Path:
 #   "adc1": a raw value, or {"6": raw, ...} per channel: adc1_get_raw, which
 #     never returns in QEMU (no SAR ADC);
 #   "wifi": "off": esp_wifi_start and the calls after it, which panic in
-#     QEMU (no radio), succeed and find no network.
+#     QEMU (no radio), succeed and find no network;
+#   "gpio": {"34": 1, ...}: gpio_get_level reads those pins at those levels
+#     (QEMU has no board behind the pins);
+#   "scenarios": the gpio shim, and the heap squeeze on vTaskDelay, so fault
+#     steps can change the ADC, the pins and the free heap as the firmware
+#     runs (fw qemu --scenario; their variables are fw_adc1_raw, fw_gpio_mask,
+#     fw_gpio_level, fw_heap_leave).
 SHIMS = Path(__file__).resolve().parent.parent / "qemu"
 OPENETH_SHIM = SHIMS / "openeth.c"
 ADC_SHIM = SHIMS / "adc.c"
 NOWIFI_SHIM = SHIMS / "nowifi.c"
+GPIO_SHIM = SHIMS / "gpio.c"
+HEAP_SHIM = SHIMS / "heap.c"
 NOWIFI_WRAPS = [f"esp_wifi_{f}" for f in ("start", "stop", "connect", "disconnect", "scan_start", "scan_stop")]
 OPENETH_WRAPS = ["esp_eth_mac_new_esp32"] + [f"esp_eth_phy_new_{p}" for p in
                                              ("lan87xx", "ip101", "rtl8201", "ksz8041", "ksz8081", "ksz80xx")]
