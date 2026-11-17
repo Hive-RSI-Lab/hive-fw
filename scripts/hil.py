@@ -52,7 +52,9 @@ and 3 when there is no bench (serialtab is not on PATH or in $FW_SERIALTAB).
 "skipped", a one-line "summary" ("36/37 (controls volstep_moved_volume)"),
 "stopped", and every case with its answer. On SIGTERM (or SIGINT) the run
 stops sending, drops its held lines (`serialtab clear`), writes the JSON
-with "exit": 1 and "stopped": true, and exits 1 within about 10 s.
+with "exit": 1 and "stopped": true, and exits 1 within about 10 s. A crash
+part-way (a bug, a bad answer) keeps the cases done: it clears the bench too,
+and a last "crashed" row names the error and the case in flight.
 """
 import argparse
 import copy
@@ -510,6 +512,23 @@ def _go(a, doc, done):
             f"stopped by {e} after the bench stopped, {n_sent} of {n_all} cases sent" if at.get("bench_stopped") else \
             f"stopped by {e} after {n_sent} of {n_all} cases were sent"
         print(f"fw hil: stopped by {e}", file=sys.stderr)
+    except Exception as e:   # a bug or a bad answer part-way: keep the cases done, the crash as the failing row
+        _settled(res)
+        dropped = bench.clear(timeout=CLEAR_ON_STOP_S) if hasattr(bench, "clear") else ""
+        n_sent = sent(res)
+        err = f"{type(e).__name__}: {e}"[:160]
+        where = "in the after check" if at.get("after") else f"at {at['case']}" if at.get("case") else \
+            f"after {res[-1]['suite']}/{res[-1]['name']}" if res else "before any case"
+        why = f"fw hil crashed {where} ({err}): {n_sent} of {n_all} cases were sent, but the restart and heap were not checked" \
+            if at.get("after") else f"fw hil crashed {where} ({err}) after {n_sent} of {n_all} cases were sent; the rest were not"
+        if at.get("case") and not at.get("after"):
+            why += f"; {at['case']} was being sent and may have reached the board"
+            if at.get("write"):
+                why += " (a write, so the board may be left changed: put it back by hand)"
+        res.append({"suite": "after", "name": "crashed", "pass": False, "answer": {"clear": dropped, "error": err},
+                    "why": why + (f" (bench: {dropped})" if dropped else "")})
+        note = f"fw hil crashed {where}: {err}, {n_sent} of {n_all} cases sent"[:200]
+        print(f"fw hil: {err}", file=sys.stderr)
     _settled(res)   # run() did, unless it raised
     # from here SIGTERM and SIGINT are ignored (set above, or by the handler), so the report is always written
     for r in res:
