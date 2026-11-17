@@ -11,13 +11,16 @@ import hil
 class FakeBoard:
     """A remote board behind the bench: volume/mute state, a diag line, and the bench's own refusals."""
 
-    def __init__(self, reboot=False, heap_min=12379, freeze=False, lease=True):
+    def __init__(self, reboot=False, heap_min=12379, freeze=False, lease=True, no_diag=False, dies_after=None):
         self.vol, self.mute, self.up = 35, False, 100
         self.reboot, self.heap_min, self.freeze, self.lease = reboot, heap_min, freeze, lease
+        self.no_diag, self.dies_after = no_diag, dies_after
         self.sent, self.diags = [], 0
 
     def call(self, cmd, timeout=0):
         self.sent.append(cmd)
+        if self.dies_after is not None and len(self.sent) > self.dies_after:
+            return None
         self.up += 1
         op, _, body = cmd[4:].partition(" ")
         if op == "ota":
@@ -26,6 +29,8 @@ class FakeBoard:
             return {"error": "Lite 5 is held by lane x until 12:00", "status": -1}
         if op == "diag":
             self.diags += 1
+            if self.no_diag:
+                return None
             up = 1 if self.reboot and self.diags > 1 else self.up
             return {"uptime_s": up, "boots": 1, "resets": "restart", "heap": {"free": 13000, "min": self.heap_min}}
         if op == "state":
@@ -127,10 +132,45 @@ class Plans(unittest.TestCase):
         env = dict(os.environ)
         try:
             os.environ["PATH"], os.environ["FW_SERIALTAB"] = "/nonexistent", ""
-            self.assertEqual(hil.main(["--plan", str(self.write(PLAN)), "--dev", "x"]), 3)
+            self.assertEqual(hil.main(["--plan", str(self.write(PLAN)), "--dev", "30:76:F5:2D:74:00"]), 3)
         finally:
             os.environ.clear()
             os.environ.update(env)
+
+    def test_dev_must_be_an_id(self):
+        self.assertEqual(hil.main(["--plan", str(self.write(PLAN)), "--dev", "Lite 5"]), 2)
+
+
+class Benches(unittest.TestCase):
+    """Bench.call against a fake serialtab: a line only queued, or dropped by the bench, stops at once."""
+
+    def bench(self, script):
+        d = Path(tempfile.mkdtemp())
+        st = d / "serialtab"
+        st.write_text("#!/bin/sh\n" + script)
+        st.chmod(0o755)
+        (d / "remote").mkdir()
+        return hil.Bench("3076f52d7400", serialtab=str(st), root=d), d / "remote" / "3076f52d7400.log"
+
+    def test_offline_board_is_a_stop(self):
+        b, _ = self.bench("echo 'note: 3076f52d7400 is offline; it goes when the board dials in' >&2\n")
+        a = b.call("api state", timeout=1)
+        self.assertEqual(a["status"], hil.STOP)
+        self.assertIn("only queued", hil.judge("ok", a))
+
+    def test_dropped_line_is_a_stop(self):
+        b, log = self.bench("")
+        b.me = "a4b54"
+        log.write_text("2026-11-17 05:00:00 --- a4b54's line 7 not sent: the board is offline\n")
+        b._size = lambda: 0
+        self.assertEqual(b.call("api state", timeout=1)["status"], hil.STOP)
+
+    def test_answer_is_read_from_the_log(self):
+        b, log = self.bench("")
+        b.me = "a4b54"
+        log.write_text('2026-11-17 05:00:00 > api state   (a4b54)\n2026-11-17 05:00:01 API {"audio": {"volume": 3}}\n')
+        b._size = lambda: 0
+        self.assertEqual(b.call("api state", timeout=1), {"audio": {"volume": 3}})
 
 
 class Runs(unittest.TestCase):
@@ -165,6 +205,36 @@ class Runs(unittest.TestCase):
         why = hil.after_check({"uptime": 1}, {"uptime": 2, "heap_min": None}, dict(hil.AFTER, heap_min_floor=1))
         self.assertIn("no least-ever-free heap", why)
         self.assertEqual(hil.after_check({"uptime": 1}, {"uptime": 2}, hil.AFTER), "")
+
+    def test_no_diag_before_sends_nothing(self):
+        b = FakeBoard(no_diag=True)
+        res = hil.run(b, PLAN)
+        self.assertEqual(b.sent, ["api diag"])
+        self.assertEqual(len(res), 1)
+        self.assertIn("no diag before the run", res[0]["why"])
+
+    def test_unsaved_var_is_not_sent(self):
+        b = FakeBoard()
+        res = hil.run(b, PLAN, {"controls"})
+        self.assertEqual([n for n, _ in bad(res)], ["restore"])
+        self.assertIn("$vol", bad(res)[0][1])
+        self.assertFalse([c for c in b.sent if "$" in c])
+
+    def test_silent_board_stops_the_run(self):
+        b = FakeBoard(dies_after=3)
+        res = hil.run(b, PLAN)
+        self.assertEqual(len(b.sent), 4)
+        self.assertTrue(all(r["pass"] is False for r in res[3:]))
+        self.assertIn("not sent: the run stopped at read/unknown", res[4]["why"])
+        self.assertIn("not checked", res[-1]["why"])
+
+    def test_restart_is_seen_against_wall_time(self):
+        before = {"uptime": 100}
+        self.assertEqual(hil.after_check(before, {"uptime": 400}, hil.AFTER, elapsed=300), "")
+        self.assertIn("restarted", hil.after_check(before, {"uptime": 150}, hil.AFTER, elapsed=300))
+
+    def test_cut_off_answer_fails(self):
+        self.assertIn("unparsed", hil.judge("4xx", {"error": "unparsed: {", "status": -2}))
 
     def test_lease_refusal_is_a_failure_not_a_skip(self):
         res = hil.run(FakeBoard(lease=False), PLAN, {"bad"})

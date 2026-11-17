@@ -33,6 +33,13 @@ Any other refusal is a FAIL, such as a missing lease or the endpoint being
 down. A board you don't hold refuses write lines, so take its lease first
 (`serialtab lease take --dev D --why ...`).
 
+The run stops sending when a line gets no answer, when the bench itself
+fails, or when the board is offline or its agent switch is off: a queued
+line would go later and its answer could be read as a later case's. The
+cases left FAIL as not sent. A case whose line still holds a "$var" that
+no earlier case saved FAILs without being sent. The run starts with the
+diag line; with no diag it sends nothing.
+
 Exit 0 when every case that ran passed, 1 when one failed, 2 on a bad plan,
 and 3 when there is no bench (serialtab is not on PATH or in $FW_SERIALTAB).
 """
@@ -40,6 +47,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +60,11 @@ NO_BENCH = 3
 AFTER = {"line": "api diag", "uptime": "uptime_s", "boots": "boots", "resets": "resets",
          "heap_free": "heap.free", "heap_min": "heap.min", "heap_drop": 4096, "heap_min_floor": None}
 SKIP_REFUSED = ["over USB only", "the body "]
+STOP = -3                   # status of an answer after which nothing more is sent
+QUEUED = ("is offline", "agent switch is off")   # serialtab send's notes for a line it only queued
+SEND_S = 30
+RESTART_SLACK_S = 30
+UNFILLED = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
 
 
 def line(op, body=None):
@@ -105,6 +118,8 @@ def judge(expect, a, saved=None, skip_refused=SKIP_REFUSED):
         if any(s in err for s in skip_refused):
             return SKIP + "the bench refused to send it (" + err[:90] + ")"
         return "the bench refused it: " + err[:200]
+    if isinstance(a, dict) and a.get("status") in (-2, STOP):
+        return str(a.get("error"))[:200]
     if not isinstance(a, dict):
         return f"answer is not an object: {str(a)[:80]}"
     e = expect if isinstance(expect, dict) else {"status": expect or "ok"}
@@ -169,7 +184,7 @@ class Bench:
         self.serialtab = serialtab or os.environ.get("FW_SERIALTAB") or shutil.which("serialtab")
         root = Path(root or os.environ.get("H2_SERIAL_DIR") or Path.home() / ".h2" / "serial")
         self.log = root / "remote" / f"{dev}.log"
-        self.me = os.environ.get("H2_NAME") or os.environ.get("USER") or "agent"
+        self.me = (os.environ.get("H2_NAME") or os.environ.get("USER") or "agent")[:20]
 
     def _size(self):
         try:
@@ -180,10 +195,15 @@ class Bench:
     def call(self, cmd, timeout=REPLY_S):
         start = self._size()
         args = [self.serialtab, "send", "--dev", self.dev, cmd] + (["--lane", self.lane] if self.lane else [])
-        r = subprocess.run(args, capture_output=True, text=True)
+        try:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=SEND_S)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return {"error": f"the bench didn't take the line: {e}"[:300], "status": STOP}
         if r.returncode:
             return {"error": (r.stderr or r.stdout).strip()[-300:], "status": -1}
-        mark, end = f"> {cmd}", time.time() + timeout
+        if any(q in r.stderr for q in QUEUED):
+            return {"error": "only queued, not sent: " + r.stderr.strip()[-200:], "status": STOP}
+        mark, gone, end = f"> {cmd}", f"--- {self.me}'s line ", time.time() + timeout
         while time.time() < end:
             try:
                 with open(self.log, "rb") as f:
@@ -192,6 +212,8 @@ class Bench:
             except FileNotFoundError:
                 lines = []
             for i, ln in enumerate(lines):   # "<19-char stamp> > cmd   (agent)", then "<stamp> API {json}"
+                if ln[20:].startswith(gone) and " not sent: " in ln:
+                    return {"error": "the bench dropped it: " + ln[20:220], "status": STOP}
                 if ln[20:].startswith(mark) and ln.rstrip().endswith(f"({self.me})"):
                     for nxt in lines[i + 1:]:
                         if nxt[20:].startswith("API "):
@@ -219,13 +241,13 @@ def _num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def after_check(before, now, after):
+def after_check(before, now, after, elapsed=0):
     """Why the board is not as it was ('' when it held): a restart, a heap fall, the least-ever-free heap under the floor."""
     why = []
     if not _num(now.get("uptime")):
         return "no diag after the run"
-    if _num(before.get("uptime")) and now["uptime"] < before["uptime"]:
-        why.append(f"restarted: uptime {before['uptime']} -> {now['uptime']}")
+    if _num(before.get("uptime")) and now["uptime"] < before["uptime"] + elapsed - RESTART_SLACK_S:
+        why.append(f"restarted: uptime {before['uptime']} -> {now['uptime']} over {round(elapsed)} s")
     if before.get("boots") is not None and now.get("boots") != before.get("boots"):
         why.append(f"boots {before['boots']} -> {now['boots']}")
     if before.get("resets") and now.get("resets") != before.get("resets"):
@@ -247,17 +269,30 @@ def run(bench, plan, suites=None, heap_min_floor=None):
     if heap_min_floor is not None:
         after["heap_min_floor"] = heap_min_floor
     skip_refused = plan.get("skip_refused", SKIP_REFUSED)
-    saved, out = {}, []
+    saved, out, stopped = {}, [], ""
+    t_before = time.time()
     before = snapshot(bench, after)
+    if not _num(before.get("uptime")):
+        return [{"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
+                 "why": f"no diag before the run ({after['line']}), so nothing was sent"}]
     for suite, cases in plan["suites"].items():
         if suites and suite not in suites:
             continue
         for c in cases:
             body = subst(copy.deepcopy(c.get("body")), saved)
-            cmd = c["line"] if "line" in c else line(c["op"], body)
+            cmd = subst(c["line"], saved) if "line" in c else line(c["op"], body)
+            r = {"suite": suite, "name": c["name"], "line": cmd[:160], "pass": False, "secs": 0, "answer": None}
+            left = UNFILLED.findall(cmd)
+            if stopped or left:
+                r["why"] = f"not sent: {stopped}" if stopped else \
+                    f"not sent: {', '.join(left)} was never saved (run the case that saves it first)"
+                out.append(r)
+                continue
             t0 = time.time()
             a = bench.call(cmd, timeout=c.get("timeout", REPLY_S))
             secs = round(time.time() - t0, 1)
+            if a is None or (isinstance(a, dict) and a.get("status") == STOP):
+                stopped = f"the run stopped at {suite}/{c['name']}"
             why = judge(c.get("expect", "ok"), a, saved, skip_refused)
             if why and not why.startswith(SKIP) and c.get("why"):
                 why = f"{c['why']}: {why}"
@@ -270,8 +305,12 @@ def run(bench, plan, suites=None, heap_min_floor=None):
             if why.startswith(SKIP):
                 r["pass"], r["skip"] = None, True
             out.append(r)
+    if stopped:
+        out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
+                    "why": f"not checked: {stopped}"})
+        return out
     now = snapshot(bench, after)
-    why = after_check(before, now, after)
+    why = after_check(before, now, after, time.time() - t_before)
     out.append({"suite": "after", "name": "no_restart_heap_held", "pass": not why, "why": why,
                 "answer": {"before": before, "after": now, "heap_min_floor": after["heap_min_floor"]}})
     return out
@@ -279,7 +318,7 @@ def run(bench, plan, suites=None, heap_min_floor=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="fw hil", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dev", help="the remote board (serialtab's id or name)")
+    p.add_argument("--dev", help="the remote board's id: 12 hex digits, its MAC (colons are dropped)")
     p.add_argument("--plan", required=True, help="the plan JSON")
     p.add_argument("--suite", help="run only these suites, comma-separated (the plan's order holds)")
     p.add_argument("--lane", help="your lab lane, for the board's lease (serialtab's default otherwise)")
@@ -303,7 +342,11 @@ def main(argv=None):
         return 0
     if not a.dev:
         p.error("--dev is needed to run (or --list)")
-    bench = Bench(a.dev, a.lane)
+    dev = a.dev.lower().replace(":", "")
+    if not re.fullmatch(r"[0-9a-f]{12}", dev):
+        print(f"fw hil: --dev {a.dev!r} is not a board id (12 hex digits, as `serialtab remote` lists)", file=sys.stderr)
+        return 2
+    bench = Bench(dev, a.lane)
     if not bench.serialtab:
         print("fw hil: no board bench here: serialtab isn't on PATH and $FW_SERIALTAB isn't set", file=sys.stderr)
         return NO_BENCH
@@ -315,7 +358,7 @@ def main(argv=None):
     n_bad = sum(r["pass"] is False for r in res)
     print(f"{len(res) - n_bad - n_skip}/{len(res) - n_skip} passed, {n_skip} skipped (the bench won't send them this way)")
     if a.json:
-        Path(a.json).write_text(json.dumps({"dev": a.dev, "plan": str(a.plan), "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "results": res}, indent=1))
+        Path(a.json).write_text(json.dumps({"dev": dev, "plan": str(a.plan), "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "results": res}, indent=1))
     return 1 if n_bad else 0
 
 
