@@ -17,6 +17,8 @@
 #   fw flash [PROJECT] --port P     flash over USB or rfc2217://host:port
 #   fw monitor [PROJECT] --port P   read and judge a board's boot log
 #   fw publish [PROJECT] [--name N] [-- ARGS]   hand the build to a board bench (serialtab, if installed)
+#   fw hil --dev D --plan F   a plan's on-hardware cases on a remote board over the bench,
+#                             then judge it held: no restart, heap above the plan's floor
 #   fw ports                  the serial ports this sandbox can see
 #   fw bootlog LOG            judge a saved boot log
 #   fw constraints [PROJECT] [--target T] [--board F] [--json]
@@ -51,6 +53,7 @@ coverage) exec "$py" "$s/coverage.py" "$@" ;;
 fuzz) exec "$py" "$s/fuzz.py" "$@" ;;
 qemu) exec "$py" "$s/qemu.py" "$@" ;;
 publish) exec "$py" "$s/publish.py" "$@" ;;
+hil) exec "$py" "$s/hil.py" "$@" ;;
 bootlog) exec "$py" "$s/bootlog.py" "$@" ;;
 check-all) exec "$py" "$s/check_all.py" "$@" ;;
 constraints) exec "$py" "$s/constraints.py" "$@" ;;
@@ -62,7 +65,7 @@ test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2
