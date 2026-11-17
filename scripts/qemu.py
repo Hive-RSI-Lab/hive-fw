@@ -367,6 +367,7 @@ class Steps(threading.Thread):
         self.port, self.steps, self.deadline, self.uart, self.gdb = port, steps, deadline, uart, gdb
         self.lines: list[str] = []
         self.result: bootlog.Verdict | None = None
+        self.at = ""  # the step running now, as the failure would name it
 
     def run(self) -> None:
         try:
@@ -379,6 +380,7 @@ class Steps(threading.Thread):
         self.prev_mark = self.mark = 0
         for st in self.steps:
             what = describe(st)
+            self.at = ("http: " if st["kind"] == "http" else "") + what
             self.prev_mark, self.mark = self.mark, len(self.uart.buf) if self.uart else 0
             bad = getattr(self, "_" + st["kind"])(st, answered)
             answered |= st["kind"] == "http"
@@ -506,7 +508,8 @@ def run(qemu: Path, image: Path, chip: str, expect: str, timeout: float, settle:
                 elif prober and prober.result is not None and not prober.result.ok:
                     v = prober.result
                 elif prober and prober.result is None:
-                    v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s waiting on the steps", True)
+                    v = bootlog.Verdict(False, f"timed out after {timeout:.0f}s waiting on the steps"
+                                                         + (f" ({prober.at})" if prober.at else ""), True)
                 break
             if prober and prober.result is not None and not prober.result.ok:
                 v = prober.result
