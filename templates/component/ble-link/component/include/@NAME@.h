@@ -39,6 +39,12 @@
  * loss, raises the round trip and skews that second's clock offset. Nor does
  * it stop jamming: in the lab, 30 forged frames a second (all counted bad)
  * cut a flood's throughput ninefold.
+ *
+ * A fresh key per run means a fresh echo too: start the echo again with each
+ * new pinger or flooder run's key. An echo left running under an old key
+ * takes a new session from frames tagged with that key (DATA after 1 s,
+ * and a new PING session clears what it answered), so a stranger who
+ * recorded an earlier run could play it back to it.
  */
 #pragma once
 

@@ -116,6 +116,8 @@ static const uint32_t K[64] = {
 
 #define ROR(x, n) ((x) >> (n) | (x) << (32 - (n)))
 
+void @NAME@_wipe(void *p, size_t n);
+
 static void block(@NAME@_sha256_t *s, const uint8_t *p) {
 	uint32_t w[64], a, b, c, d, e, f, g, h;
 	for (int i = 0; i < 16; i++)
@@ -133,6 +135,7 @@ static void block(@NAME@_sha256_t *s, const uint8_t *p) {
 	}
 	s->h[0] += a, s->h[1] += b, s->h[2] += c, s->h[3] += d;
 	s->h[4] += e, s->h[5] += f, s->h[6] += g, s->h[7] += h;
+	@NAME@_wipe(w, sizeof(w)); /* the key's own block passes through here */
 }
 
 static void sha256_init(@NAME@_sha256_t *s) {
@@ -228,6 +231,8 @@ void @NAME@_tag(const @NAME@_key_t *k, const uint8_t *hdr, uint8_t tag[@UNAME@_T
 	sha256_update(&s, d, sizeof(d));
 	sha256_final(&s, d);
 	memcpy(tag, d, @UNAME@_TAG);
+	@NAME@_wipe(&s, sizeof(s)); /* a copy of the key's states makes tags too */
+	@NAME@_wipe(d, sizeof(d));
 }
 
 size_t @NAME@_encode(const @NAME@_key_t *k, const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
@@ -251,14 +256,16 @@ size_t @NAME@_encode(const @NAME@_key_t *k, const @NAME@_frame_t *f, uint8_t *bu
 
 bool @NAME@_decode(const @NAME@_key_t *k, const uint8_t *buf, size_t n, @NAME@_frame_t *f) {
 	if (!k || !k->ready || !buf || n < @UNAME@_MIN || n > @UNAME@_MAX) return false;
-	/* the tag first: nothing of a frame that fails it is believed */
+	/* the cheap checks first, so junk costs no hashing; they change nothing
+	 * and tell a sender nothing it doesn't know */
+	if (buf[0] != MAGIC0 || buf[1] != MAGIC1 || buf[2] != VERSION) return false;
+	if (buf[3] < @UNAME@_PING || buf[3] > @UNAME@_DATA) return false;
+	if ((size_t) (buf[4] | buf[5] << 8) != n) return false; /* truncated (or padded) */
+	/* then the tag: nothing of a frame that fails it is believed */
 	uint8_t tag[@UNAME@_TAG], diff = 0;
 	@NAME@_tag(k, buf, tag);
 	for (int i = 0; i < @UNAME@_TAG; i++) diff |= tag[i] ^ buf[n - @UNAME@_TAG + i];
 	if (diff) return false;
-	if (buf[0] != MAGIC0 || buf[1] != MAGIC1 || buf[2] != VERSION) return false;
-	if (buf[3] < @UNAME@_PING || buf[3] > @UNAME@_DATA) return false;
-	if ((size_t) (buf[4] | buf[5] << 8) != n) return false; /* truncated (or padded) */
 	uint32_t seq = get32(buf + 10);
 	for (size_t i = @UNAME@_HDR; i < n - @UNAME@_TAG; i++)
 		if (buf[i] != pattern(seq, i)) return false;

@@ -43,7 +43,7 @@ From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
   reset the expected count (`seen` now refuses it). A third input,
   `regress-forged`, is a frame tagged under a key one bit off the run's:
   it must count as bad and move nothing else (the harness builds such
-  frames for any input with flag bit 32 set).
+  frames for any input whose flag byte has bit 5, mask 32, set).
 
 Rules the lab found:
 
@@ -114,6 +114,8 @@ Rules the lab found:
   against 3.8 untagged, an upper bound on the cost (the images differed in
   other ways too). The tag doesn't stop a replay within a run (a dup, see
   `@NAME@.h`) or jamming: 30 forged frames a second cut a flood ninefold.
+  Start the echo afresh with each run's key: an echo left up under an old
+  key would take a recorded earlier run played back to it.
   The frames aren't secret: anything that must be needs encryption too.
 - Internal RAM is the scarce part, not flash. On the Lite (Wi-Fi + Bluetooth
   + audio) about 13 KB of internal RAM was left, and the first lab image

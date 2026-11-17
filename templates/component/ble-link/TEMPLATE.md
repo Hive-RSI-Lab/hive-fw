@@ -93,7 +93,9 @@ Rules the lab found:
 - No pairing, bonding or link encryption: each frame carries
   `espnow-link`'s tag (HMAC-SHA256 of the header under the run's key,
   `cfg.key` from the project's provisioning), so a stranger's forged or
-  seq-jumped frames count as bad and move nothing. Pairing would not do:
+  seq-jumped frames count as bad and move nothing but bad (a replay
+  within a run is a dup, and an echo needs a fresh start per run's key:
+  see `@NAME@.h`). Pairing would not do:
   Just Works, the only mode two headless boards have, is open to a man in
   the middle, and a bond is per pair of boards where the key is per run.
   The frames aren't secret: anything that must be needs LE Secure
