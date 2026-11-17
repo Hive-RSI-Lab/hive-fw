@@ -45,6 +45,14 @@ diag line; with no diag it sends nothing.
 
 Exit 0 when every case that ran passed, 1 when one failed, 2 on a bad plan,
 and 3 when there is no bench (serialtab is not on PATH or in $FW_SERIALTAB).
+--list exits 0 on a good plan and 2 on a bad one, and sends nothing.
+
+--json OUT is written on every exit (0, 1, 2 or 3), by a temp file and a
+rename, so a reader never sees half of it: "exit", "passed", "failed",
+"skipped", a one-line "summary" ("36/37 (controls volstep_moved_volume)"),
+"stopped", and every case with its answer. On SIGTERM (or SIGINT) the run
+stops sending, drops its held lines (`serialtab clear`), writes the JSON
+with "exit": 1 and "stopped": true, and exits 1 within about 10 s.
 """
 import argparse
 import copy
@@ -52,6 +60,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -66,6 +75,7 @@ SKIP_REFUSED = ["over USB only", "the body "]
 STOP = -3                   # status of an answer after which nothing more is sent
 QUEUED = ("is offline", "agent switch is off")   # serialtab send's notes for a line it only queued
 SEND_S = 30
+CLEAR_ON_STOP_S = 8        # a SIGTERM's clear, so the whole stop fits in about 10 s
 RESTART_SLACK_S = 30
 UNFILLED = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\b")
 
@@ -79,6 +89,10 @@ def line(op, body=None):
 
 
 _MISSING = object()
+
+
+class Stopped(Exception):
+    """A SIGTERM or SIGINT: stop sending and clean up."""
 
 
 def get(a, path):
@@ -229,10 +243,10 @@ class Bench:
             time.sleep(0.5)
         return None
 
-    def clear(self):
+    def clear(self, timeout=SEND_S):
         """Drop this agent's lines the bench still holds for the board."""
         try:
-            r = subprocess.run([self.serialtab, "clear", "--dev", self.dev], capture_output=True, text=True, timeout=SEND_S)
+            r = subprocess.run([self.serialtab, "clear", "--dev", self.dev], capture_output=True, text=True, timeout=timeout)
             return (r.stdout or r.stderr).strip()[-200:]
         except (OSError, subprocess.TimeoutExpired) as e:
             return f"couldn't clear: {e}"
@@ -275,18 +289,21 @@ def after_check(before, now, after, elapsed=0):
     return "; ".join(why)
 
 
-def run(bench, plan, suites=None, heap_min_floor=None):
+def run(bench, plan, suites=None, heap_min_floor=None, out=None):
+    """Every case's result, appended to out (so a stop part-way still has the cases done)."""
+    out = [] if out is None else out
     after = dict(AFTER, **plan.get("after", {}))
     if heap_min_floor is not None:
         after["heap_min_floor"] = heap_min_floor
     skip_refused = plan.get("skip_refused", SKIP_REFUSED)
-    saved, out, stopped = {}, [], ""
+    saved, stopped = {}, ""
     before = snapshot(bench, after)
     t_before = time.time()
     if not _num(before.get("uptime")):
         bench.clear() if hasattr(bench, "clear") else None
-        return [{"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
-                 "why": f"no diag before the run ({after['line']}), so nothing was sent"}]
+        out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
+                    "why": f"no diag before the run ({after['line']}), so nothing was sent"})
+        return out
     for suite, cases in plan["suites"].items():
         if suites and suite not in suites:
             continue
@@ -338,24 +355,63 @@ def run(bench, plan, suites=None, heap_min_floor=None):
     return out
 
 
+def summarize(res, exit_code, note=""):
+    """The counts and a one-line summary: "36/37 (controls volstep_moved_volume)"."""
+    n_skip = sum(bool(r.get("skip")) for r in res)
+    failed = [f"{r['suite']} {r['name']}" for r in res if r["pass"] is False]
+    n_pass = len(res) - len(failed) - n_skip
+    line_ = note or f"{n_pass}/{len(res) - n_skip}"
+    if failed and not note:
+        line_ += " (" + ", ".join(failed[:3]) + (f", +{len(failed) - 3} more" if len(failed) > 3 else "") + ")"
+    return {"exit": exit_code, "passed": n_pass, "failed": len(failed), "skipped": n_skip, "summary": line_}
+
+
+def write_json(path, doc):
+    """Write doc to path by a temp file in the same folder and a rename, so a reader never sees half of it."""
+    path = Path(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(doc, indent=1))
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f"fw hil: couldn't write {path}: {e}", file=sys.stderr)
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def _stop(signum, frame):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise Stopped(signal.Signals(signum).name)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="fw hil", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dev", help="the remote board's id: 12 hex digits, its MAC (colons or dashes are dropped)")
     p.add_argument("--plan", required=True, help="the plan JSON")
     p.add_argument("--suite", help="run only these suites, comma-separated (the plan's order holds)")
     p.add_argument("--lane", help="your lab lane, for the board's lease (serialtab's default otherwise)")
-    p.add_argument("--json", help="write every case and answer here")
+    p.add_argument("--json", help="write the counts, a summary, and every case and answer here (on every exit)")
     p.add_argument("--heap-min-floor", type=int, help="fail when the least-ever-free heap is under this (overrides the plan)")
     p.add_argument("--list", action="store_true", help="print the plan's cases and lines, send nothing")
     a = p.parse_args(argv)
+    doc = {"dev": a.dev, "plan": str(a.plan), "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "stopped": False}
+
+    def done(code, res=(), note=""):
+        if a.json and not a.list:
+            write_json(a.json, dict(doc, **summarize(list(res), code, note), results=list(res)))
+        return code
+
     plan, bad = load_plan(a.plan)
     if bad:
         print("fw hil: the plan is wrong:\n  " + "\n  ".join(bad), file=sys.stderr)
-        return 2
+        return done(2, note=f"bad plan: {bad[0]}"[:200])
     suites = set(a.suite.split(",")) if a.suite else None
     if suites and suites - set(plan["suites"]):
         print(f"fw hil: no suite {sorted(suites - set(plan['suites']))} in the plan (it has {', '.join(plan['suites'])})", file=sys.stderr)
-        return 2
+        return done(2, note=f"bad plan: no suite {', '.join(sorted(suites - set(plan['suites'])))}")
     if a.list:
         for s, cases in plan["suites"].items():
             if not suites or s in suites:
@@ -363,25 +419,38 @@ def main(argv=None):
                     print(f"{s:9} {c['name']:26} {c['line'] if 'line' in c else line(c['op'], c.get('body'))}")
         return 0
     if not a.dev:
-        p.error("--dev is needed to run (or --list)")
+        print("fw hil: --dev is needed to run (or --list)", file=sys.stderr)
+        return done(2, note="bad call: no --dev")
     dev = a.dev.lower().replace(":", "").replace("-", "")
+    doc["dev"] = dev
     if not re.fullmatch(r"[0-9a-f]{12}", dev):
         print(f"fw hil: --dev {a.dev!r} is not a board id (12 hex digits, as `serialtab remote` lists)", file=sys.stderr)
-        return 2
+        return done(2, note=f"bad call: --dev {a.dev} is not a board id")
     bench = Bench(dev, a.lane)
     if not bench.serialtab:
         print("fw hil: no board bench here: serialtab isn't on PATH and $FW_SERIALTAB isn't set", file=sys.stderr)
-        return NO_BENCH
-    res = run(bench, plan, suites, a.heap_min_floor)
-    for r in res:
-        tag = "SKIP" if r.get("skip") else "PASS" if r["pass"] else "FAIL"
-        print(f"{tag} {r['suite']:9} {r['name']:26} {r['why']}")
-    n_skip = sum(bool(r.get("skip")) for r in res)
-    n_bad = sum(r["pass"] is False for r in res)
-    print(f"{len(res) - n_bad - n_skip}/{len(res) - n_skip} passed, {n_skip} skipped (the bench won't send them this way)")
-    if a.json:
-        Path(a.json).write_text(json.dumps({"dev": dev, "plan": str(a.plan), "t": time.strftime("%Y-%m-%dT%H:%M:%S"), "results": res}, indent=1))
-    return 1 if n_bad else 0
+        return done(NO_BENCH, note="no bench: serialtab not found")
+    res = []
+    old = {sig: signal.signal(sig, _stop) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        run(bench, plan, suites, a.heap_min_floor, out=res)
+    except Stopped as e:
+        dropped = bench.clear(timeout=CLEAR_ON_STOP_S)
+        res.append({"suite": "after", "name": "stopped", "pass": False, "answer": {"clear": dropped},
+                    "why": f"stopped by {e} after {len(res)} cases; the rest were not sent" + (f" (bench: {dropped})" if dropped else "")})
+        doc["stopped"] = True
+        print(f"fw hil: stopped by {e}", file=sys.stderr)
+    try:   # a second signal while the stop's JSON is written is ignored (the handler set SIG_IGN)
+        for r in res:
+            tag = "SKIP" if r.get("skip") else "PASS" if r["pass"] else "FAIL"
+            print(f"{tag} {r['suite']:9} {r['name']:26} {r['why']}")
+        n_skip = sum(bool(r.get("skip")) for r in res)
+        n_bad = sum(r["pass"] is False for r in res)
+        print(f"{len(res) - n_bad - n_skip}/{len(res) - n_skip} passed, {n_skip} skipped (the bench won't send them this way)")
+        return done(1 if n_bad else 0, res)
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
 
 
 if __name__ == "__main__":

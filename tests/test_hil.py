@@ -1,5 +1,9 @@
 import json
 import os
+import signal
+import subprocess
+import sys
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +21,7 @@ class FakeBoard:
         self.no_diag, self.dies_after = no_diag, dies_after
         self.sent, self.diags, self.cleared = [], 0, 0
 
-    def clear(self):
+    def clear(self, timeout=0):
         self.cleared += 1
         return "dropped 1"
 
@@ -275,6 +279,98 @@ class Runs(unittest.TestCase):
     def test_lease_refusal_is_a_failure_not_a_skip(self):
         res = hil.run(FakeBoard(lease=False), PLAN, {"bad"})
         self.assertEqual([n for n, _ in bad(res)], ["volume_101"])
+
+
+class Exits(unittest.TestCase):
+    """--json on every exit, written whole; a SIGTERM stops, clears and still writes it."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.plan = self.d / "plan.json"
+        self.plan.write_text(json.dumps(PLAN))
+        self.out = self.d / "out.json"
+        self._bench = hil.Bench
+
+    def tearDown(self):
+        hil.Bench = self._bench
+
+    def fake(self, board):
+        board.serialtab = "fake"
+        hil.Bench = lambda dev, lane=None: board
+        return board
+
+    def main(self, *extra):
+        return hil.main(["--dev", "3076f52d7400", "--plan", str(self.plan), "--json", str(self.out), *extra])
+
+    def doc(self):
+        self.assertEqual([p.name for p in self.d.iterdir() if p.name.endswith(".tmp")], [])
+        return json.loads(self.out.read_text())
+
+    def test_pass_writes_counts_and_summary(self):
+        self.fake(FakeBoard())
+        self.assertEqual(self.main(), 0)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["failed"], d["skipped"], d["stopped"]), (0, 0, 1, False))
+        self.assertEqual(d["summary"], f"{d['passed']}/{d['passed']}")
+
+    def test_failure_names_the_case(self):
+        self.fake(FakeBoard(freeze=True))
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["failed"]), (1, 1))
+        self.assertTrue(d["summary"].endswith("(controls moved)"), d["summary"])
+
+    def test_bad_plan_still_writes(self):
+        self.plan.write_text('{"suites": {"a": [{"op": "x"}]}}')
+        self.assertEqual(self.main(), 2)
+        self.assertTrue(self.doc()["summary"].startswith("bad plan:"))
+        self.assertEqual(self.doc()["exit"], 2)
+
+    def test_no_bench_still_writes(self):
+        board = self.fake(FakeBoard())
+        board.serialtab = None
+        self.assertEqual(self.main(), 3)
+        self.assertEqual(self.doc()["exit"], 3)
+
+    def test_list_exits_0_or_2_and_writes_nothing(self):
+        self.assertEqual(self.main("--list"), 0)
+        self.plan.write_text('{"suites": {}}')
+        self.assertEqual(self.main("--list"), 2)
+        self.assertFalse(self.out.exists())
+
+    def test_sigterm_stops_clears_and_writes(self):
+        board = self.fake(FakeBoard())
+        call = board.call
+
+        def call_then_term(cmd, timeout=0):
+            if len(board.sent) == 3:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return call(cmd, timeout)
+        board.call = call_then_term
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["stopped"]), (1, True))
+        self.assertEqual(board.cleared, 1)
+        self.assertLessEqual(len(board.sent), 4)
+        self.assertIn("stopped by SIGTERM", d["results"][-1]["why"])
+        self.assertIs(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+
+    def test_sigterm_during_a_stuck_send_exits_in_time(self):
+        st = self.d / "serialtab"
+        st.write_text('#!/bin/sh\nif [ "$1" = clear ]; then echo dropped 2; exit 0; fi\nexec sleep 60\n')
+        st.chmod(0o755)
+        env = dict(os.environ, FW_SERIALTAB=str(st), H2_SERIAL_DIR=str(self.d))
+        script = Path(hil.__file__)
+        pr = subprocess.Popen([sys.executable, str(script), "--dev", "3076f52d7400", "--plan", str(self.plan), "--json", str(self.out)],
+                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(1)
+        t0 = time.time()
+        pr.send_signal(signal.SIGTERM)
+        self.assertEqual(pr.wait(timeout=10), 1)
+        self.assertLess(time.time() - t0, 10)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["stopped"]), (1, True))
+        self.assertIn("dropped 2", d["results"][-1]["why"])
 
 
 if __name__ == "__main__":
