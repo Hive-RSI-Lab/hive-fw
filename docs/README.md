@@ -85,6 +85,8 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `fw idf [P] -- ARGS` | Any `idf.py` command with the right environment: `size-components`, `fullclean`, `-D SDKCONFIG_DEFAULTS=... reconfigure`. |
 | `eval "$(fw env [P])"` | Puts `IDF_PATH`, `PATH` and `FW_QEMU` in your shell, for scripts of your own. |
 | `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. Don't set `"host_tests": "."` in an IDF project: the project's own `CMakeLists.txt` is IDF's, so the runner takes it and fails; use a subdirectory such as `test/host`. Keep host builds in their own dir (`build-host/`), not `build/`: `idf.py` refuses a `build/` that has no CMake cache of its own. |
+| `fw new component NAME [P] [--from T] [--into DIR] [--force]` | Starts a part from a template that has worked on a board: copies `templates/component/<T>/component/` into `P/components/NAME` (or `--into`, inside the project) and its host test into the `host_tests` dir, wired by `fw-src` lines, so `fw host-test P -k test_NAME` passes at once. `T` defaults to NAME when a template has that name, else `plain`. `@NAME@` (the C name, `-` becomes `_`), `@UNAME@`, `@COMPONENT@` and `@DIR@` are filled in file names and contents. It writes nothing over an existing file without `--force`. Each template's `TEMPLATE.md` says what it does and what it measured on the board it came from. `fw new list` lists them. |
+| `fw new check [T ...] [--keep]` | Proves the templates still build: each goes into a copy of `examples/hello` once per IDF its `template.json` lists (`{"idf": ["v4.4.8", "v5.5.6"]}`), then through `fw build` and its host test. A host test can't see the IDF side (a callback whose shape changed between IDF versions, a header that moved), so run this after editing a template. Slow; needs those IDFs. |
 | `fw qemu [P] [--http 'GET /path' ...] [--hold S]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
 | `fw flash [P] --port PORT` | `idf.py -p PORT flash`. `PORT` is `/dev/ttyUSB0` for a board on this machine, or `rfc2217://host:4000` for a board elsewhere. `FW_PORT` sets a default. |
 | `fw publish [P] [--name N] [--build DIR] [--no-post] [-- ARGS]` | Hands the build to a Hive's board bench, where the person flashes it from their browser: runs `serialtab publish BUILD NAME --chip CHIP [--profile bench.json] --post`. NAME is fw.json `"name"` or the folder's name; CHIP comes from `"target"`; the profile is fw.json `"bench"` or `bench.json` beside fw.json. The bench posts a "flash this build" link in your thread (`--no-post` leaves it out). fw doesn't carry the bench: without `serialtab` (on `PATH` or `$FW_SERIALTAB`) it says so and exits 3, and `fw flash` still works over a port. |
@@ -284,6 +286,22 @@ says so. There are two ways to reach one:
 
 Flashing changes a physical board, so flash only a board you've been asked to
 work on.
+
+## Templates
+
+`templates/component/` holds components that worked on a real board, cut
+loose from it so the next board starts from them (`fw new`):
+
+- `espnow-link`: a measured ESP-NOW link between two boards beside Wi-Fi
+  STA (echo, ping, flood; loss, RTT, clock offset and drift), from the
+  hi-fi Lite lab (projects/hifi-lite-lab, lane esp32-lab).
+- `plain`: an empty component split into host-tested C and an IDF side.
+
+A new template is a `component/` tree and a `host_test/` tree with
+`@NAME@` where the name goes, a `TEMPLATE.md` whose first line is its
+summary, and a `template.json` listing the IDFs it builds on. Keep the
+board-free logic in plain C that the host test covers, the IDF calls in a
+thin `_esp.c` beside it, and run `fw new check` before you commit.
 
 ## Test and score
 

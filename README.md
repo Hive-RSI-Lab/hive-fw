@@ -6,11 +6,12 @@ It is a handful of small commands that agents combine as they need, not a
 pipeline.
 
 - `bin/fw` runs the commands: `setup`, `doctor`, `build`, `idf`,
-  `host-test`, `qemu`, `flash`, `publish`, `monitor`, `ports`, `bootlog`, `constraints`, `pins`, `dts`, `stm32`,
+  `host-test`, `new`, `qemu`, `flash`, `publish`, `monitor`, `ports`, `bootlog`, `constraints`, `pins`, `dts`, `stm32`,
   `test`, `check-all` and `score`.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.
 - `host/unity/` is Unity v2.6.0, for host unit tests ([NOTICE](NOTICE)).
+- `templates/` holds components that worked on a board, for `fw new`.
 - `faults/` is the score's corpus: real firmware with planted faults.
 - `examples/hello/` is the module's own proof: an IDF app with a host test
   and a QEMU boot.
