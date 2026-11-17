@@ -113,10 +113,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t size) {
 		size_t len = frame(&z, air, sizeof(air), now, rx.session);
 		/* recv_cb */
 		if (len == 0 || len > @UNAME@_MAX) continue;
-		memcpy(item, air, len);
+		size_t took = @NAME@_take(item, sizeof(item), air, len);
+		FUZZ_ASSERT(took == len);
 		/* handle(): the same call the radio task makes */
 		@NAME@_frame_t pong;
-		@NAME@_got_t got = @NAME@_receive(&rx, &tx, echo, !echo, item, len, now, &pong);
+		@NAME@_got_t got = @NAME@_receive(&rx, &tx, echo, !echo, item, took, now, &pong);
 		if (got == @UNAME@_GOT_BAD)
 			bad++;
 		else {

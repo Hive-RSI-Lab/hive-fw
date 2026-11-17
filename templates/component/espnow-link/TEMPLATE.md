@@ -16,7 +16,9 @@ From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
   a round-trip histogram (p50/p95/p99), and NTP-style clock offset with a
   least-squares drift in ppm from the best sample of each second, the
   still-open second included (the base for synced playback across boards).
-  Results come out as JSON.
+  Results come out as JSON. `@NAME@_take` is the receive callback's copy
+  into its queue item, and `@NAME@_receive` is what `handle()` does with a
+  frame. `ble-link` uses the same file.
 - `@NAME@_espnow.c` / `include/@NAME@_espnow.h`: the radio side. Roles echo
   (answer pings, count data), ping (rate_hz frames a second) and flood (as
   fast as the radio takes them, `window` in flight; a send report missing

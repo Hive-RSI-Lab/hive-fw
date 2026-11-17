@@ -3,10 +3,11 @@
 From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8, Bluedroid,
 Wi-Fi station on the home AP and the A2DP sink up beside it).
 
-- `@NAME@.c` / `include/@NAME@.h`: `espnow-link`'s link core (plain C,
-  host-tested): the frames, the duplicate window, the echo end's counts,
-  the pinger's round trips, NTP-style clock offset and drift, JSON; and
-  `@NAME@_take`, the callbacks' copy into the queue.
+- `@NAME@.c` / `include/@NAME@.h`: the link core, the same file as
+  `espnow-link`'s (plain C, host-tested): the frames, the duplicate
+  window, the echo end's counts, the pinger's round trips, NTP-style clock
+  offset and drift, JSON, `@NAME@_take` (the callbacks' copy into the
+  queue) and `@NAME@_receive` (what `handle()` does with a frame).
 - `@NAME@_bleutil.c` / `include/@NAME@_bleutil.h`: the BLE parts that need
   no radio (plain C, host-tested). The advertisement that marks a board
   (company 0xffff, "hl" and its Wi-Fi MAC: for labs, never a product) and

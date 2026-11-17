@@ -402,6 +402,24 @@ class Exits(unittest.TestCase):
         self.assertIn("in the after check", d["summary"])
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
+    def test_sigterm_while_the_bench_is_cleared_counts_only_sent_cases(self):
+        """The bench dies at the third case; a SIGTERM while it is cleared says how many cases were really sent."""
+        board = self.fake(FakeBoard(dies_after=3))   # the before diag and two cases answer
+        clear = board.clear
+
+        def clear_then_term(timeout=0):
+            if board.cleared == 0:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return clear(timeout)
+        board.clear = clear_then_term
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        self.assertTrue(d["stopped"])
+        why = d["results"][-1]["why"]
+        self.assertIn("while clearing the bench: the run stopped at", why)
+        self.assertIn("so 3 of 9 cases were sent", why)
+        self.assertNotIn("after check", why)
+
     def test_json_dir_is_made(self):
         self.out = self.d / "new" / "deeper" / "out.json"
         self.fake(FakeBoard())
