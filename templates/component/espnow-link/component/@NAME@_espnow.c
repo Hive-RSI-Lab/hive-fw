@@ -49,6 +49,7 @@ static StaticTask_t worker_tcb;
 static SemaphoreHandle_t window_sem;
 static @NAME@_tx_t *tx;
 static @NAME@_rx_t *rx;
+static rx_item_t *rx_it; /* the receive callback's item: made once, in PSRAM when there is some */
 
 static volatile bool run, alive;
 static @NAME@_espnow_cfg_t cfg;
@@ -65,19 +66,20 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int n)
 #else
 static void recv_cb(const uint8_t *mac, const uint8_t *data, int n) {
 #endif
-	/* on the Wi-Fi task only, one call at a time: its item is static (~260
-	 * bytes off that task's stack; xQueueSend copies it) */
+	/* on the Wi-Fi task only, one call at a time: its item is rx_it (~260
+	 * bytes off that task's stack and out of internal RAM; xQueueSend
+	 * copies it) */
 	int64_t t = esp_timer_get_time();
 	if (!run || n <= 0 || n > @UNAME@_MAX) return;
 	if (memcmp(mac, cfg.peer, 6)) { /* only the peer's frames are looked at */
 		other++;
 		return;
 	}
-	static rx_item_t it;
-	it.len = (uint8_t) n;
-	it.t_us = t;
-	memcpy(it.data, data, n);
-	if (xQueueSend(q, &it, 0) != pdTRUE) q_full++;
+	rx_item_t *it = rx_it;
+	it->len = (uint8_t) n;
+	it->t_us = t;
+	memcpy(it->data, data, n);
+	if (xQueueSend(q, it, 0) != pdTRUE) q_full++;
 }
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
@@ -228,7 +230,8 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 		if (!window_sem) window_sem = xSemaphoreCreateCounting(16, 0);
 		if (!tx) tx = big(sizeof(*tx)); /* ~4 KB: the round-trip histogram */
 		if (!rx) rx = big(sizeof(*rx));
-		if (!qmem || !stack || !window_sem || !tx || !rx) {
+		if (!rx_it) rx_it = big(sizeof(*rx_it));
+		if (!qmem || !stack || !window_sem || !tx || !rx || !rx_it) {
 			free(qmem);
 			free(stack);
 			return ESP_ERR_NO_MEM;

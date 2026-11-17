@@ -52,12 +52,17 @@ Rules the lab found:
   4 KB task stack both come from internal RAM in IDF 4.4, even with PSRAM
   malloc on. The template now puts the queue storage (`xQueueCreateStatic`),
   the worker's stack (`xTaskCreateStaticPinnedToCore`, needs
-  `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`) and the histogram in PSRAM
-  when the board has it, and makes the worker once: it sleeps on a task
+  `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`), the histogram and the
+  receive callback's item in PSRAM when the board has it (a 270-byte static
+  item was enough to fail the Lite's 12000-byte heap check after a run;
+  queue and semaphore control blocks stay internal: the ESP32's atomic
+  compare-and-set doesn't work on PSRAM), and makes the worker once: it sleeps on a task
   notification between runs, so a static stack is never reused while a
   deleted task still holds it. A task with a PSRAM stack must not write
   flash (NVS); keep it to the radio. Check `heap_caps_get_free_size
-  (MALLOC_CAP_INTERNAL)` before and after start on your board.
+  (MALLOC_CAP_INTERNAL)` before and after start on your board; ESP-NOW
+  keeps about 230 bytes of internal RAM after its first init, even after
+  `esp_now_deinit`.
 - IDF 5.x moved `MACSTR` to `esp_mac.h` and `esp_random` to
   `esp_random.h`, changed the receive callback to take
   `esp_now_recv_info_t` (5.0) and the send callback to take
