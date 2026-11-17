@@ -294,6 +294,7 @@ class Exits(unittest.TestCase):
         self.plan.write_text(json.dumps(PLAN))
         self.out = self.d / "out.json"
         self._bench = hil.Bench
+        self._term = signal.getsignal(signal.SIGTERM)
 
     def tearDown(self):
         hil.Bench = self._bench
@@ -468,6 +469,44 @@ class Exits(unittest.TestCase):
         board.call = boom
         self.assertEqual(self.main(), 1)
         self.assertIn("ValueError", self.doc()["summary"])
+
+    def test_a_crash_mid_plan_keeps_the_cases_done(self):
+        board = self.fake(FakeBoard())
+        call = board.call
+
+        def boom_at_unknown(cmd, timeout=0):
+            if cmd.startswith("api no/such"):
+                raise KeyError("half an answer")
+            return call(cmd, timeout)
+        board.call = boom_at_unknown
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        names = [r["name"] for r in d["results"]]
+        self.assertEqual(names, ["state", "ota", "crashed"])
+        last = d["results"][-1]
+        self.assertIs(last["pass"], False)
+        self.assertIn("KeyError", last["why"])
+        self.assertIn("at read/unknown", last["why"])
+        self.assertIn("1 of 9 cases were sent", last["why"])
+        self.assertEqual(board.cleared, 1)
+        self.assertFalse(d["stopped"])
+        self.assertEqual(d["failed"], 1)
+        self.assertRegex(d["summary"], r"^fw hil crashed at read/unknown: KeyError")
+        self.assertIs(signal.getsignal(signal.SIGTERM), self._term)
+
+    def test_a_crash_in_a_send_says_it_may_have_reached_the_board(self):
+        board = self.fake(FakeBoard())
+        call = board.call
+
+        def boom_at_voldown(cmd, timeout=0):
+            if "voldown" in cmd:
+                raise RuntimeError("bench bug")
+            return call(cmd, timeout)
+        board.call = boom_at_voldown
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        self.assertEqual([r["name"] for r in d["results"]][-2:], ["next", "crashed"])
+        self.assertIn("controls/voldown was being sent and may have reached the board", d["results"][-1]["why"])
 
     def test_sigterm_during_a_stuck_send_exits_in_time(self):
         st = self.d / "serialtab"
