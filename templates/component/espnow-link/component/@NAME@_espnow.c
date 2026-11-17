@@ -6,6 +6,9 @@
 #include <string.h>
 
 #include "@NAME@.h"
+#if CONFIG_BT_ENABLED
+#include "esp_bt.h" /* esp_bt_controller_get_status */
+#endif
 #include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
@@ -219,10 +222,14 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	    cfg.window > 16 || cfg.ps > @UNAME@_PS_MAX)
 		return ESP_ERR_INVALID_ARG;
 #if CONFIG_BT_ENABLED
-	/* With Bluetooth in the image, the coexistence code in the Wi-Fi blob
-	 * panics a few seconds after modem sleep is turned off ("Should enable
-	 * WiFi modem sleep when both WiFi and Bluetooth are enabled") */
-	if (cfg.ps == @UNAME@_PS_NONE) return ESP_ERR_NOT_SUPPORTED;
+	/* With the Bluetooth controller enabled, the coexistence code in the
+	 * Wi-Fi blob panics a few seconds after modem sleep is turned off
+	 * ("Should enable WiFi modem sleep when both WiFi and Bluetooth are
+	 * enabled"). With the controller disabled (esp_bt_controller_disable,
+	 * after esp_bluedroid_disable) it is safe, and it is what a receiver
+	 * needs to lose nothing (TEMPLATE.md) */
+	if (cfg.ps == @UNAME@_PS_NONE && esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED)
+		return ESP_ERR_NOT_SUPPORTED;
 #endif
 	if (!worker) {
 		uint8_t *qmem = big(QLEN * sizeof(rx_item_t));

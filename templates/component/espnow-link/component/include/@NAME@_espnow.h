@@ -32,8 +32,11 @@
 typedef enum { @UNAME@_ROLE_ECHO = 0, @UNAME@_ROLE_PING = 1, @UNAME@_ROLE_FLOOD = 2 } @NAME@_role_t;
 
 /* Wi-Fi power save for the run, put back at its end. NONE is refused
- * (ESP_ERR_NOT_SUPPORTED) with Bluetooth in the image: the coexistence
- * code panics without modem sleep. */
+ * (ESP_ERR_NOT_SUPPORTED) while the Bluetooth controller is enabled: the
+ * coexistence code panics without modem sleep. Disable the controller
+ * first (and don't enable it again until the run is over), or NONE on the
+ * receiving board is out of reach: in modem sleep it misses about a
+ * quarter to a third of a flood's frames (TEMPLATE.md). */
 typedef enum { @UNAME@_PS_KEEP = 0, @UNAME@_PS_NONE, @UNAME@_PS_MIN, @UNAME@_PS_MAX } @NAME@_ps_t;
 
 typedef struct {

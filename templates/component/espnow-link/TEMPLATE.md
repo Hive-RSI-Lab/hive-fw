@@ -35,14 +35,32 @@ Rules the lab found:
 - `esp_now_send` returns before the frame is on air; the send callback is
   the MAC-level ack. A flood that doesn't wait for the callbacks (a window)
   gets ESP_ERR_ESPNOW_NO_MEM, not more throughput.
-- Wi-Fi modem sleep (the default with Bluetooth on) is a likely cause of
-  delayed and lost frames to a sleeping peer, but the lab did not isolate
-  it (see below); measure with the power save you will ship.
-- With Bluetooth in the image, never `esp_wifi_set_ps(WIFI_PS_NONE)`: the
-  coexistence code in the Wi-Fi blob logs "Should enable WiFi modem sleep
-  when both WiFi and Bluetooth are enabled" and panics a few seconds later
-  (IDF 4.4, seen on every try on the Lite). Refuse it under
-  `CONFIG_BT_ENABLED`; `WIFI_PS_MIN_MODEM` is the fastest you get.
+- The receiver's Wi-Fi modem sleep is what loses frames, not Bluetooth.
+  A board in modem sleep (`WIFI_PS_MIN_MODEM` or `MAX`, the default with
+  Bluetooth on) has its radio off between beacons, and frames sent to it
+  then fail after the MAC's retries: a window-16 flood to it lost 23–35%
+  (about 75 frames a second, whatever the load). The lab isolated it on
+  two Lites:
+  with the receiver's Bluetooth controller disabled and modem sleep left
+  on, the loss stayed the same; with modem sleep off as well
+  (`WIFI_PS_NONE`) it lost nothing in 28000 frames and received 3.6 Mbit/s
+  instead of about 0.4. Keeping Bluetooth up but quiet (no page or inquiry
+  scans) with `esp_coex_preference_set(ESP_COEX_PREFER_WIFI)` didn't help.
+  The sender's own modem sleep and Bluetooth didn't matter. So: a board
+  that must receive ESP-NOW without loss needs `WIFI_PS_NONE`, which means
+  its Bluetooth controller off for that time; a board that keeps Bluetooth
+  on gets about a quarter to a third of a flood lost and must retry.
+- Never `esp_wifi_set_ps(WIFI_PS_NONE)` while the Bluetooth controller is
+  enabled: the coexistence code in the Wi-Fi blob logs "Should enable WiFi
+  modem sleep when both WiFi and Bluetooth are enabled" and panics a few
+  seconds later (IDF 4.4, seen on every try on the Lite). The template
+  refuses `PS_NONE` while `esp_bt_controller_get_status()` says enabled.
+  To get there at runtime: `esp_bluedroid_disable()`, wait (the Lite's
+  sink waits 400 ms), `esp_bt_controller_disable()`, then
+  `WIFI_PS_NONE`. To come back, put modem sleep on (`WIFI_PS_MIN_MODEM`)
+  before `esp_bt_controller_enable()`, then `esp_bluedroid_enable()`;
+  profiles such as the A2DP sink have to be set up again (the Lite
+  restarts). A connected phone is dropped.
 - Only frames from the configured peer are looked at; nothing is
   forwarded. Encryption (a PMK/LMK) is off in the template: turn it on for
   anything that carries commands.
@@ -75,11 +93,12 @@ Rules the lab found:
   RTT median 3.7 ms, RTT p99 27.6–75.8 ms, 2.55–9.25% of frames lost after
   the MAC's retries; a 250-byte flood peaks near 400 kbps received at 24M
   with a third of frames lost. Every lost frame was a MAC-level failure (a
-  nack after the retries); none was dropped inside the boards. Modem sleep
-  on the receiver is a likely cause but was not isolated: a `ps none`
-  comparison isn't possible with Bluetooth on. Good for control and sync
-  messages with an app-level retry; not for streaming audio. Data and
-  method: hifi-lite-lab `lab/espnow.md`.
+  nack after the retries); none was dropped inside the boards: the
+  receiver was in modem sleep (above). Good for control and sync messages
+  with an app-level retry; not for streaming audio. With the receiver's
+  Bluetooth controller off and `WIFI_PS_NONE`, a 250-byte flood at 54M with
+  a window of 16 lost nothing at 3.6 Mbit/s. Data and method: hifi-lite-lab
+  `lab/espnow.md`.
 - A radio experiment can hang a board (one Lite stopped answering right
   after a run and stayed off the network). An unattended board needs
   `CONFIG_ESP_TASK_WDT_PANIC=y` so a stuck task restarts it, and a check
