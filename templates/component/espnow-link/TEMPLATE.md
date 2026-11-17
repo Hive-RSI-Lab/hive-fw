@@ -90,7 +90,9 @@ Rules the lab found:
   task stuck holding a mutex can sit forever unless something outside it
   notices that its tick stopped (the Lite lab restarts after 3 min). Give
   the task watchdog room (15 s on the Lite) so a slow flash write
-  doesn't trip it.
+  doesn't trip it. The watched task's stack can go in PSRAM too, as long
+  as it never writes flash: on the Lite, moving the lab tick's 3 KB stack
+  there took free internal RAM from about 12 K to about 15 K.
 
 Use: `fw new component NAME --from espnow-link`, call
 `NAME_espnow_start(&cfg)` on both boards after `esp_wifi_start()` (echo on
