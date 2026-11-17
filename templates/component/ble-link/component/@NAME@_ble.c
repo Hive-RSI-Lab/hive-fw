@@ -111,8 +111,7 @@ static void post(ev_t ev, const uint8_t *data, size_t n) {
 	rx_item_t *it = cb_it;
 	it->ev = ev;
 	it->t_us = esp_timer_get_time();
-	it->len = (uint16_t) (n > @UNAME@_BLE_PAYLOAD ? 0 : n); /* too long: decodes as bad */
-	if (data && it->len) memcpy(it->data, data, it->len);
+	it->len = (uint16_t) @NAME@_take(it->data, sizeof(it->data), data, n); /* too long: 0, which decodes as bad */
 	if (xQueueSend(q, it, 0) != pdTRUE) q_full++;
 }
 
@@ -461,22 +460,18 @@ static bool send_frame(@NAME@_frame_t *f) {
 }
 
 static void handle(const rx_item_t *it) {
-	@NAME@_frame_t f;
-	if (!@NAME@_decode(it->data, it->len, &f)) {
-		@NAME@_rx_bad(rx);
-		return;
-	}
-	if (cfg.role == @UNAME@_BLE_ECHO && f.type == @UNAME@_PING) {
-		@NAME@_frame_t pong;
-		@NAME@_pong_for(&f, it->t_us, 0, &pong);
-		rx->pings++;
+	@NAME@_frame_t pong;
+	switch (@NAME@_receive(rx, tx, cfg.role == @UNAME@_BLE_ECHO, cfg.role != @UNAME@_BLE_ECHO, it->data, it->len,
+	                       it->t_us, &pong)) {
+	case @UNAME@_GOT_REPLY:
 		send_frame(&pong);
-	} else if (cfg.role == @UNAME@_BLE_ECHO && f.type == @UNAME@_DATA)
-		@NAME@_rx_data(rx, &f, it->t_us);
-	else if (cfg.role != @UNAME@_BLE_ECHO && f.type == @UNAME@_PONG)
-		@NAME@_tx_pong(tx, &f, it->t_us);
-	else
+		break;
+	case @UNAME@_GOT_OTHER:
 		other++;
+		break;
+	default:
+		break;
+	}
 }
 
 /* room in the stack for one more write: not congested and a buffer free on

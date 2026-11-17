@@ -79,9 +79,8 @@ static void recv_cb(const uint8_t *mac, const uint8_t *data, int n) {
 		return;
 	}
 	rx_item_t *it = rx_it;
-	it->len = (uint8_t) n;
+	it->len = (uint8_t) @NAME@_take(it->data, sizeof(it->data), data, (size_t) n);
 	it->t_us = t;
-	memcpy(it->data, data, n);
 	if (xQueueSend(q, it, 0) != pdTRUE) q_full++;
 }
 
@@ -108,22 +107,18 @@ static bool send_frame(@NAME@_frame_t *f) {
 }
 
 static void handle(const rx_item_t *it) {
-	@NAME@_frame_t f;
-	if (!@NAME@_decode(it->data, it->len, &f)) {
-		@NAME@_rx_bad(rx);
-		return;
-	}
-	if (cfg.role == @UNAME@_ROLE_ECHO && f.type == @UNAME@_PING) {
-		@NAME@_frame_t pong;
-		@NAME@_pong_for(&f, it->t_us, 0, &pong);
-		rx->pings++;
+	@NAME@_frame_t pong;
+	switch (@NAME@_receive(rx, tx, cfg.role == @UNAME@_ROLE_ECHO, cfg.role == @UNAME@_ROLE_PING, it->data, it->len,
+	                       it->t_us, &pong)) {
+	case @UNAME@_GOT_REPLY:
 		send_frame(&pong);
-	} else if (cfg.role == @UNAME@_ROLE_ECHO && f.type == @UNAME@_DATA)
-		@NAME@_rx_data(rx, &f, it->t_us);
-	else if (cfg.role == @UNAME@_ROLE_PING && f.type == @UNAME@_PONG)
-		@NAME@_tx_pong(tx, &f, it->t_us);
-	else
+		break;
+	case @UNAME@_GOT_OTHER:
 		other++;
+		break;
+	default:
+		break;
+	}
 }
 
 static void teardown(void) {

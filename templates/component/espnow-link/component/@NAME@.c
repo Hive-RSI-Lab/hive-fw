@@ -239,6 +239,37 @@ void @NAME@_pong_for(const @NAME@_frame_t *ping, int64_t t2, int64_t t3, @NAME@_
 	pong->t3 = t3;
 }
 
+/* ------------------------------------------------------- one received frame */
+
+size_t @NAME@_take(uint8_t *dst, size_t cap, const uint8_t *src, size_t n) {
+	if (!src || !n || n > cap) return 0;
+	memcpy(dst, src, n);
+	return n;
+}
+
+@NAME@_got_t @NAME@_receive(@NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs, const uint8_t *buf, size_t n,
+                            int64_t t_us, @NAME@_frame_t *pong) {
+	@NAME@_frame_t f;
+	if (!@NAME@_decode(buf, n, &f)) {
+		@NAME@_rx_bad(rx);
+		return @UNAME@_GOT_BAD;
+	}
+	if (echo && f.type == @UNAME@_PING) {
+		@NAME@_pong_for(&f, t_us, 0, pong);
+		rx->pings++;
+		return @UNAME@_GOT_REPLY;
+	}
+	if (echo && f.type == @UNAME@_DATA) {
+		@NAME@_rx_data(rx, &f, t_us);
+		return @UNAME@_GOT_USED;
+	}
+	if (pongs && f.type == @UNAME@_PONG) {
+		@NAME@_tx_pong(tx, &f, t_us);
+		return @UNAME@_GOT_USED;
+	}
+	return @UNAME@_GOT_OTHER;
+}
+
 /* ------------------------------------------------------------ sending end */
 
 void @NAME@_tx_init(@NAME@_tx_t *t, uint32_t session) {

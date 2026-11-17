@@ -206,21 +206,11 @@ class Fuzz(unittest.TestCase):
     def run_fw(self, *args):
         return subprocess.run([FW, *args], capture_output=True, text=True)
 
-    def test_espnow_link_harness_and_its_regressions(self):
-        d = copy_hello()
-        new.create("espnow-link", "my-part", d)
-        f = d / "test" / "fuzz"
-        self.assertTrue((f / "fuzz_my_part.c").is_file())
-        src = new.TEMPLATES / "espnow-link" / "fuzz" / "seeds" / "fuzz_@NAME@"
-        seeds = f / "seeds" / "fuzz_my_part"
-        for s in src.iterdir():  # inputs are copied byte for byte, not filled
-            self.assertEqual((seeds / s.name).read_bytes(), s.read_bytes(), s.name)
-        r = self.run_fw("fuzz", str(d), "--only", "fuzz_my_part", "--secs", "3")
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+    def regressions(self, d, seeds):
+        """Each regression input passes, then fails with its bug put back (the sanitizer or an invariant, not
+        some other error)."""
         c = d / "components" / "my-part" / "my_part.c"
         fixed = c.read_text()
-        # each regression input fails with its bug put back (the sanitizer or
-        # an invariant, not some other error), and only then
         bugs = {
             "regress-seq-wrap": ("\tif (seq == UINT32_MAX) return -1;\n", "", "FUZZ_ASSERT"),
             "regress-pong-time-overflow": ("if (f->t1 < 0 || f->t1 > t4 || t4 > MY_PART_T_MAX || f->t2 < 0 || "
@@ -240,6 +230,35 @@ class Fuzz(unittest.TestCase):
                     c.write_text(fixed)
         finally:
             c.write_text(fixed)
+
+    def test_espnow_link_harness_and_its_regressions(self):
+        d = copy_hello()
+        new.create("espnow-link", "my-part", d)
+        f = d / "test" / "fuzz"
+        self.assertTrue((f / "fuzz_my_part.c").is_file())
+        src = new.TEMPLATES / "espnow-link" / "fuzz" / "seeds" / "fuzz_@NAME@"
+        seeds = f / "seeds" / "fuzz_my_part"
+        for s in src.iterdir():  # inputs are copied byte for byte, not filled
+            self.assertEqual((seeds / s.name).read_bytes(), s.read_bytes(), s.name)
+        r = self.run_fw("fuzz", str(d), "--only", "fuzz_my_part", "--secs", "3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.regressions(d, seeds)
+
+    def test_ble_link_harness_and_its_regressions(self):
+        d = copy_hello()
+        new.create("ble-link", "my-part", d)
+        f = d / "test" / "fuzz"
+        h = (f / "fuzz_my_part.c").read_text()
+        self.assertIn("my_part_receive(", h)  # the call handle() makes, not a copy
+        self.assertIn("my_part_take(", h)
+        src = new.TEMPLATES / "ble-link" / "fuzz" / "seeds" / "fuzz_@NAME@"
+        seeds = f / "seeds" / "fuzz_my_part"
+        for s in src.iterdir():
+            self.assertEqual((seeds / s.name).read_bytes(), s.read_bytes(), s.name)
+        r = self.run_fw("fuzz", str(d), "--only", "fuzz_my_part", "--secs", "3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.regressions(d, seeds)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,9 @@
 /* @NAME@'s receive side under `fw fuzz`: every frame a nearby board sends
  * (recv_cb takes 1..@UNAME@_MAX bytes from the configured peer, and a MAC is
  * easy to forge) goes through decode and on to the sink's counts or the
- * pinger's round trips, as handle() in @NAME@_espnow.c routes it. Byte 0
- * picks the role (echo or ping) and the clock's start; then frames, each
+ * pinger's round trips through @NAME@_receive, the call handle() in
+ * @NAME@_espnow.c makes. Byte 0 picks the role (echo or ping) and the
+ * clock's start; then frames, each
  * after a gap of up to a second and a bit, so sessions go idle and the
  * drift's one-second windows close. A frame is raw bytes or built with
  * @NAME@_encode from fields in the input, so the fuzzer gets past the
@@ -112,31 +113,31 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t size) {
 		size_t len = frame(&z, air, sizeof(air), now, rx.session);
 		/* recv_cb */
 		if (len == 0 || len > @UNAME@_MAX) continue;
-		memcpy(item, air, len);
-		/* handle() */
-		@NAME@_frame_t f;
-		if (!@NAME@_decode(item, len, &f)) {
-			@NAME@_rx_bad(&rx);
+		size_t took = @NAME@_take(item, sizeof(item), air, len);
+		FUZZ_ASSERT(took == len);
+		/* handle(): the same call the radio task makes */
+		@NAME@_frame_t pong;
+		@NAME@_got_t got = @NAME@_receive(&rx, &tx, echo, !echo, item, took, now, &pong);
+		if (got == @UNAME@_GOT_BAD)
 			bad++;
-		} else {
+		else {
 			/* a frame that decodes is exactly what encode makes of it */
+			@NAME@_frame_t f;
 			uint8_t again[@UNAME@_MAX];
+			FUZZ_ASSERT(@NAME@_decode(item, len, &f));
 			FUZZ_ASSERT(@NAME@_encode(&f, again, sizeof(again)) == len && !memcmp(again, item, len));
-			if (echo && f.type == @UNAME@_PING) {
-				@NAME@_frame_t pong;
-				@NAME@_pong_for(&f, now, 0, &pong);
+			if (got == @UNAME@_GOT_REPLY) {
+				FUZZ_ASSERT(echo && f.type == @UNAME@_PING);
 				FUZZ_ASSERT(pong.type == @UNAME@_PONG && pong.session == f.session && pong.seq == f.seq &&
 				            pong.t1 == f.t1 && pong.t2 == now && pong.len == f.len);
 				pong.t3 = now + 1; /* as send_frame stamps it */
 				FUZZ_ASSERT(@NAME@_encode(&pong, again, sizeof(again)) == pong.len);
-				rx.pings++;
 				pings++;
-			} else if (echo && f.type == @UNAME@_DATA)
-				@NAME@_rx_data(&rx, &f, now);
-			else if (!echo && f.type == @UNAME@_PONG) {
-				@NAME@_tx_pong(&tx, &f, now);
-				pongs_in++;
-			}
+			} else if (got == @UNAME@_GOT_USED) {
+				FUZZ_ASSERT(echo ? f.type == @UNAME@_DATA : f.type == @UNAME@_PONG);
+				if (!echo) pongs_in++;
+			} else
+				FUZZ_ASSERT(got == @UNAME@_GOT_OTHER && (echo ? f.type == @UNAME@_PONG : f.type != @UNAME@_PONG));
 		}
 		/* the counts after every frame */
 		FUZZ_ASSERT(rx.bad == bad && rx.pings == pings);
