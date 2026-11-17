@@ -88,7 +88,12 @@ Rules the lab found:
   Run those checks from an `esp_timer`, not from the task they watch and
   not under its lock: the task watchdog only sees subscribed tasks, so a
   task stuck holding a mutex can sit forever unless something outside it
-  notices that its tick stopped (the Lite lab restarts after 3 min). Give
+  notices that its tick stopped (the Lite lab restarts after 3 min). Back
+  that restart with the task watchdog (`esp_task_wdt_add(NULL)` just
+  before `esp_restart()`): `esp_restart` runs the shutdown handlers first,
+  `esp_wifi_stop` among them, and a hang inside the Wi-Fi driver would hang
+  the restart too. Count `ESP_RST_TASK_WDT` and `ESP_RST_PANIC` as your own
+  restart when the marker says so. Give
   the task watchdog room (15 s on the Lite) so a slow flash write
   doesn't trip it. The watched task's stack can go in PSRAM too, as long
   as it never writes flash: on the Lite, moving the lab tick's 3 KB stack
