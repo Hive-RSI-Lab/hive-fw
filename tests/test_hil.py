@@ -17,10 +17,11 @@ import hil
 class FakeBoard:
     """A remote board behind the bench: volume/mute state, a diag line, and the bench's own refusals."""
 
-    def __init__(self, reboot=False, heap_min=12379, freeze=False, lease=True, no_diag=False, dies_after=None):
+    def __init__(self, reboot=False, heap_min=12379, freeze=False, lease=True, no_diag=False, dies_after=None,
+                 queued=False):
         self.vol, self.mute, self.up = 35, False, 100
         self.reboot, self.heap_min, self.freeze, self.lease = reboot, heap_min, freeze, lease
-        self.no_diag, self.dies_after = no_diag, dies_after
+        self.no_diag, self.dies_after, self.queued = no_diag, dies_after, queued
         self.sent, self.diags, self.cleared = [], 0, 0
 
     def clear(self, timeout=0):
@@ -30,7 +31,7 @@ class FakeBoard:
     def call(self, cmd, timeout=0):
         self.sent.append(cmd)
         if self.dies_after is not None and len(self.sent) > self.dies_after:
-            return None
+            return {"error": "only queued, not sent: lane busy", "status": hil.STOP} if self.queued else None
         self.up += 1
         op, _, body = cmd[4:].partition(" ")
         if op == "ota":
@@ -358,7 +359,7 @@ class Exits(unittest.TestCase):
         self.assertLessEqual(len(board.sent), 4)
         self.assertIn("stopped by SIGTERM", d["results"][-1]["why"])
         self.assertIn("was being sent", d["results"][-1]["why"])
-        self.assertRegex(d["summary"], r"^stopped by SIGTERM after \d+ of \d+ cases$")
+        self.assertRegex(d["summary"], r"^stopped by SIGTERM after \d+ of \d+ cases were sent$")
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
     def test_sigterm_once_run_returns_is_not_a_stop(self):
@@ -381,7 +382,7 @@ class Exits(unittest.TestCase):
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
     def test_sigterm_in_the_after_check_is_a_stop(self):
-        """A SIGTERM during the after snapshot still stops the run at once, and says every case was sent."""
+        """A SIGTERM during the after snapshot still stops the run at once, and says how many cases were sent."""
         board = self.fake(FakeBoard())
         call = board.call
         diags = []
@@ -398,7 +399,7 @@ class Exits(unittest.TestCase):
         d = self.doc()
         self.assertEqual((d["exit"], d["stopped"]), (1, True))
         self.assertEqual(d["results"][-1]["name"], "stopped")
-        self.assertIn("in the after check: every case was sent", d["results"][-1]["why"])
+        self.assertIn("in the after check: 9 of 9 cases were sent", d["results"][-1]["why"])
         self.assertIn("in the after check", d["summary"])
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
@@ -416,9 +417,43 @@ class Exits(unittest.TestCase):
         d = self.doc()
         self.assertTrue(d["stopped"])
         why = d["results"][-1]["why"]
-        self.assertIn("while clearing the bench: the run stopped at", why)
-        self.assertIn("so 3 of 9 cases were sent", why)
+        self.assertIn("after the bench stopped (3 of 9 cases were sent): the run stopped at", why)
         self.assertNotIn("after check", why)
+
+    def test_a_line_the_bench_only_queued_is_not_counted_as_sent(self):
+        board = self.fake(FakeBoard(dies_after=3, queued=True))
+        clear = board.clear
+
+        def clear_then_term(timeout=0):
+            if board.cleared == 0:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return clear(timeout)
+        board.clear = clear_then_term
+        self.assertEqual(self.main(), 1)
+        self.assertIn("(2 of 9 cases were sent)", self.doc()["results"][-1]["why"])
+
+    def test_sigterm_in_the_after_check_counts_skipped_cases(self):
+        """Cases skipped for a failed save are not counted as sent, even when the run reaches the after check."""
+        board = self.fake(FakeBoard())
+        call = board.call
+        diags = []
+
+        def call_then_term(cmd, timeout=0):
+            if cmd == hil.AFTER["line"]:
+                diags.append(cmd)
+                if len(diags) == 2:
+                    os.kill(os.getpid(), signal.SIGTERM)
+            if cmd.startswith("api state"):
+                board.sent.append(cmd)
+                return {}   # nothing to save, so the cases after it are skipped
+            return call(cmd, timeout)
+        board.call = call_then_term
+        self.assertEqual(self.main(), 1)
+        d = self.doc()
+        why = d["results"][-1]["why"]
+        skipped = sum(str(r.get("why", "")).startswith("not sent") for r in d["results"])
+        self.assertGreater(skipped, 0)
+        self.assertIn(f"in the after check: {9 - skipped} of 9 cases were sent", why)
 
     def test_json_dir_is_made(self):
         self.out = self.d / "new" / "deeper" / "out.json"
