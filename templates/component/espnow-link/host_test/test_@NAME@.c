@@ -69,6 +69,9 @@ static void test_seen(void) {
 	for (uint32_t q = 0; q < 5000; q += 2) TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, q));
 	TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, 4997)); /* a reused slot isn't a duplicate */
 	TEST_ASSERT_EQUAL(1, @NAME@_seen(&s, 4998));
+	/* the last value would wrap top to 0 and reset "expected" (found by fuzzing) */
+	TEST_ASSERT_EQUAL(-1, @NAME@_seen(&s, UINT32_MAX));
+	TEST_ASSERT_EQUAL(4999, s.top);
 }
 
 static void test_receiver(void) {
@@ -189,6 +192,19 @@ static void test_sender(void) {
 	/* a slow pong lands in the last bin, not past the end */
 	@NAME@_frame_t slow = {@UNAME@_PONG, 9, 501, a, a, a, 64};
 	@NAME@_tx_pong(t, &slow, a + 5000000);
+	TEST_ASSERT_EQUAL(1, t->rtt_bins[@UNAME@_RTT_BINS - 1]);
+	/* times no echo could have written: t1 after t4, t3 before t2, times
+	 * that would overflow the round trip's sum (found by fuzzing), a round
+	 * trip over @UNAME@_RTT_MAX_US */
+	@NAME@_frame_t odd[] = {
+		{@UNAME@_PONG, 9, 510, a + 10, a, a, 64},
+		{@UNAME@_PONG, 9, 511, a, a + 5, a, 64},
+		{@UNAME@_PONG, 9, 512, a, INT64_MIN + 1, INT64_MAX, 64},
+		{@UNAME@_PONG, 9, 513, a, a, a, 64},
+	};
+	for (int i = 0; i < 3; i++) @NAME@_tx_pong(t, &odd[i], a);
+	@NAME@_tx_pong(t, &odd[3], a + @UNAME@_RTT_MAX_US + 1);
+	TEST_ASSERT_EQUAL(4, t->bad);
 	TEST_ASSERT_EQUAL(1, t->rtt_bins[@UNAME@_RTT_BINS - 1]);
 	free(t);
 }

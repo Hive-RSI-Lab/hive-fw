@@ -10,6 +10,8 @@ board it came from. `fw new component NAME` copies one into the project:
   DIR/                       the component (default PROJECT/components/NAME)
   <host tests>/test_NAME.c   its host test, wired to DIR by fw-src lines
                              (fw.json "host_tests", default test/host)
+  <fuzz dir>/fuzz_NAME.c     its libFuzzer harness and seeds/fuzz_NAME/, when
+                             it has one (fw.json "fuzz_tests", default test/fuzz)
 
 then `fw host-test PROJECT -k NAME` runs it. NAME is a C identifier stem
 (letters, digits, _ or -; a - becomes _ in the C names). TEMPLATE defaults
@@ -17,7 +19,9 @@ to NAME when a template of that name exists, else "plain". Nothing is
 overwritten without --force.
 
 Each template is templates/component/<T>/ with a component/ tree, a
-host_test/ tree and a TEMPLATE.md (its first line is the one-line summary).
+host_test/ tree, an optional fuzz/ tree (a harness for `fw fuzz`, its seeds
+under seeds/, copied byte for byte) and a TEMPLATE.md (its first line is the
+one-line summary).
 In file names and contents @NAME@ becomes the C name, @UNAME@ the same in
 capitals, @COMPONENT@ the component's directory name and @DIR@ its path
 from the project root. A template.json beside it may list the IDF versions
@@ -66,13 +70,14 @@ def fill(text: str, subs: dict[str, str]) -> str:
     return text
 
 
-def plan(template: str, name: str, project: Path, into: Path, tests: Path) -> list[tuple[Path, Path]]:
+def plan(template: str, name: str, project: Path, into: Path, tests: Path,
+         fuzz: Path | None = None) -> list[tuple[Path, Path]]:
     """(source in the template, destination) for every file, destinations filled in"""
     cname = name.replace("-", "_")
     subs = {"@NAME@": cname, "@UNAME@": cname.upper(), "@COMPONENT@": into.name}
     root = TEMPLATES / template
     out = []
-    for part, dest in (("component", into), ("host_test", tests)):
+    for part, dest in (("component", into), ("host_test", tests), ("fuzz", fuzz or project / "test/fuzz")):
         base = root / part
         if not base.is_dir():
             continue
@@ -97,15 +102,20 @@ def create(template: str, name: str, project: Path, into: Path | None = None, fo
         raise ValueError(f"{into} is outside the project {project}: its host test couldn't name it") from None
     pins = fwlib.read_pins(project)
     tests = project / (pins.get("host_tests") or "test/host")
+    fuzz = project / (pins.get("fuzz_tests") or "test/fuzz")
     cname = name.replace("-", "_")
     subs = {"@NAME@": cname, "@UNAME@": cname.upper(), "@COMPONENT@": into.name, "@DIR@": rel.as_posix()}
-    files = plan(template, name, project, into, tests)
+    files = plan(template, name, project, into, tests, fuzz)
     clash = [d for _, d in files if d.exists()]
     if clash and not force:
         raise ValueError("already there (--force to overwrite): " + ", ".join(str(c.relative_to(project)) for c in clash))
+    seeds = TEMPLATES / template / "fuzz" / "seeds"
     for src, dest in files:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(fill(src.read_text(encoding="utf-8"), subs), encoding="utf-8")
+        if src.is_relative_to(seeds):  # fuzzer inputs: bytes, not text
+            dest.write_bytes(src.read_bytes())
+        else:
+            dest.write_text(fill(src.read_text(encoding="utf-8"), subs), encoding="utf-8")
     return [d for _, d in files]
 
 

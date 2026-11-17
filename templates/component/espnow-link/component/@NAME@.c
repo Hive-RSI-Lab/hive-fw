@@ -147,6 +147,9 @@ static void bit_clear(@NAME@_seen_t *s, uint32_t seq) {
 int @NAME@_seen(@NAME@_seen_t *s, uint32_t seq) {
 	uint32_t i = seq % @UNAME@_WINDOW;
 	uint64_t mask = 1ull << (i % 64);
+	/* top is seq + 1, so the last value would wrap it to 0 and reset
+	 * "expected"; no real sender gets there (49 days at 1000 frames/s) */
+	if (seq == UINT32_MAX) return -1;
 	if (seq >= s->top) {
 		/* move the window up: forget what falls out of it */
 		if ((uint64_t) seq - s->top >= @UNAME@_WINDOW)
@@ -286,14 +289,22 @@ void @NAME@_tx_pong(@NAME@_tx_t *t, const @NAME@_frame_t *f, int64_t t4) {
 		t->stray++;
 		return;
 	}
-	int s = @NAME@_seen(&t->seen, f->seq);
-	if (s != 0) {
-		t->dup++;
+	/* the times come off the air: only ones an echo could have written are
+	 * used (our t1 no later than now, the echo's t3 no earlier than its t2,
+	 * all in range), so the sums below can't overflow. Checked before the
+	 * sequence number, so a forged PONG doesn't use up the real one's. */
+	if (f->t1 < 0 || f->t1 > t4 || t4 > @UNAME@_T_MAX || f->t2 < 0 || f->t3 < f->t2 || f->t3 > @UNAME@_T_MAX) {
+		t->bad++;
 		return;
 	}
 	int64_t delay = (t4 - f->t1) - (f->t3 - f->t2);
-	if (delay < 0 || f->t1 > t4) {
+	if (delay < 0 || delay > @UNAME@_RTT_MAX_US) {
 		t->bad++;
+		return;
+	}
+	int s = @NAME@_seen(&t->seen, f->seq);
+	if (s != 0) {
+		t->dup++;
 		return;
 	}
 	t->pongs++;
