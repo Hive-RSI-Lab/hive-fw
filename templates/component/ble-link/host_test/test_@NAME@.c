@@ -72,6 +72,9 @@ static void test_seen(void) {
 	for (uint32_t q = 0; q < 5000; q += 2) TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, q));
 	TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, 4997)); /* a reused slot isn't a duplicate */
 	TEST_ASSERT_EQUAL(1, @NAME@_seen(&s, 4998));
+	/* the last value would wrap top to 0 and reset "expected" (found by fuzzing) */
+	TEST_ASSERT_EQUAL(-1, @NAME@_seen(&s, UINT32_MAX));
+	TEST_ASSERT_EQUAL(4999, s.top);
 }
 
 static void test_receiver(void) {
@@ -194,7 +197,7 @@ static void test_sender(void) {
 	@NAME@_tx_pong(t, &slow, a + 5000000);
 	TEST_ASSERT_EQUAL(1, t->rtt_bins[@UNAME@_RTT_BINS - 1]);
 	/* hostile times off the radio: no overflow, counted as bad */
-	uint32_t bad0 = t->bad, pongs0 = t->pongs;
+	uint32_t bad0 = t->bad, pongs0 = t->pongs, dup0 = t->dup;
 	@NAME@_frame_t h1 = {@UNAME@_PONG, 9, 502, INT64_MIN, 0, 0, 64};
 	@NAME@_tx_pong(t, &h1, a);
 	@NAME@_frame_t h2 = {@UNAME@_PONG, 9, 503, a, INT64_MIN, INT64_MAX, 64};
@@ -204,6 +207,16 @@ static void test_sender(void) {
 	@NAME@_frame_t h4 = {@UNAME@_PONG, 9, 505, a, INT64_MAX - 5, INT64_MAX, 64};
 	@NAME@_tx_pong(t, &h4, a + 10);
 	TEST_ASSERT_TRUE(t->bad == bad0 + 4 && t->pongs == pongs0);
+	/* a round trip over @UNAME@_RTT_MAX_US answers no ping of the run, and a
+	 * forged PONG doesn't use up the real one's sequence number */
+	@NAME@_frame_t far = {@UNAME@_PONG, 9, 506, a, a, a, 64};
+	@NAME@_tx_pong(t, &far, a + @UNAME@_RTT_MAX_US + 1);
+	@NAME@_frame_t forged = {@UNAME@_PONG, 9, 507, a + 10, a, a, 64};
+	@NAME@_tx_pong(t, &forged, a);
+	TEST_ASSERT_TRUE(t->bad == bad0 + 6 && t->pongs == pongs0);
+	@NAME@_frame_t real = {@UNAME@_PONG, 9, 507, a, a, a, 64};
+	@NAME@_tx_pong(t, &real, a + 100);
+	TEST_ASSERT_TRUE(t->pongs == pongs0 + 1 && t->dup == dup0);
 	free(t);
 }
 

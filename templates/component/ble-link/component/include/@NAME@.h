@@ -29,6 +29,8 @@
 #define @UNAME@_WINDOW 1024 /* sequence numbers the duplicate check remembers */
 #define @UNAME@_RTT_BIN_US 100
 #define @UNAME@_RTT_BINS 1000 /* 0 to 100 ms; slower ones land in the last bin */
+#define @UNAME@_RTT_MAX_US 10000000 /* a PONG slower than this answers no ping of the run: bad */
+#define @UNAME@_T_MAX ((int64_t) 1 << 52) /* a PONG's times past this (142 years of uptime) are bad */
 
 typedef enum { @UNAME@_PING = 1, @UNAME@_PONG = 2, @UNAME@_DATA = 3 } @NAME@_type_t;
 
@@ -49,7 +51,8 @@ typedef struct {
 	uint64_t bits[@UNAME@_WINDOW / 64];
 } @NAME@_seen_t;
 
-/* 0 new, 1 a duplicate, -1 too old to tell */
+/* 0 new, 1 a duplicate, -1 too old to tell (and seq UINT32_MAX, which
+ * would wrap top) */
 int @NAME@_seen(@NAME@_seen_t *s, uint32_t seq);
 
 /* ------------------------------------------------------------ receiving end */
@@ -110,7 +113,9 @@ void @NAME@_tx_init(@NAME@_tx_t *t, uint32_t session);
 void @NAME@_tx_sent(@NAME@_tx_t *t, size_t len, bool ok, int64_t now_us);
 /* the radio's send report: acknowledged by the peer or not */
 void @NAME@_tx_acked(@NAME@_tx_t *t, bool acked);
-/* a PONG that arrived at t4 */
+/* a PONG that arrived at t4. One whose times no echo could have written (t1
+ * after t4, t3 before t2, a negative time or round trip, a round trip over
+ * @UNAME@_RTT_MAX_US, any time past @UNAME@_T_MAX) counts as bad. */
 void @NAME@_tx_pong(@NAME@_tx_t *t, const @NAME@_frame_t *f, int64_t t4);
 /* round trip at percentile p (0..100), in microseconds; -1 none */
 double @NAME@_tx_rtt_pct(const @NAME@_tx_t *t, double p);
