@@ -21,6 +21,14 @@ Wi-Fi station on the home AP and the A2DP sink up beside it).
   flood as fast as the stack takes it) and get the echo's answers as
   notifications. `count` ends ping and flood runs; echo runs until stopped.
   `on_end` says when a run ended by itself.
+- `fuzz/fuzz_@NAME@.c` (into the project's fuzz dir): the receive side under
+  `fw fuzz`. The link has no pairing and the echo knows its peer only by a
+  BLE address, which is easy to forge, so every value written or notified
+  goes through `@NAME@_take` (as the callbacks queue it: too long counts
+  as bad) and `@NAME@_receive`, the same calls `post()` and `handle()`
+  make, with the counts, percentiles, drift and JSON checked after each;
+  and the advertisement's mark walk on raw bytes. The core is
+  `espnow-link`'s, so its two regression inputs are in `seeds/` too.
 
 Rules the lab found:
 

@@ -126,5 +126,22 @@ double @NAME@_tx_kbps(const @NAME@_tx_t *t);
 /* the sender's result as one JSON object; the length, or 0 when cap is too small (512 is plenty) */
 size_t @NAME@_tx_json(const @NAME@_tx_t *t, char *out, size_t cap);
 
+/* ------------------------------------------------------- one received frame */
+
+typedef enum {
+	@UNAME@_GOT_USED,  /* counted (DATA, a PONG) */
+	@UNAME@_GOT_REPLY, /* a PING: send *pong back (its t3 stamped at the send) */
+	@UNAME@_GOT_BAD,   /* not one of ours, or damaged: counted in rx->bad */
+	@UNAME@_GOT_OTHER, /* a good frame this end has no use for */
+} @NAME@_got_t;
+
+/* What an end does with the bytes of one frame from the radio (n as
+ * received: never trusted). An echo end answers PINGs and counts DATA into
+ * rx; an end that takes PONGs (pongs) counts them into tx. rx is always
+ * needed, tx only with pongs. t_us: the arrival time. The radio task and the
+ * fuzzer both call this, so what is fuzzed is what runs. */
+@NAME@_got_t @NAME@_receive(@NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs, const uint8_t *buf, size_t n,
+                            int64_t t_us, @NAME@_frame_t *pong);
+
 /* "30:76:f5:2d:74:3c", "30-76-..." or "3076f52d743c" (a board's device id) */
 bool @NAME@_parse_mac(const char *s, uint8_t mac[6]);

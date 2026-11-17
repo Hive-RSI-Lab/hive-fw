@@ -241,5 +241,30 @@ class Fuzz(unittest.TestCase):
         finally:
             c.write_text(fixed)
 
+    def test_ble_link_harness_and_its_regressions(self):
+        d = copy_hello()
+        new.create("ble-link", "my-part", d)
+        f = d / "test" / "fuzz"
+        h = (f / "fuzz_my_part.c").read_text()
+        self.assertIn("my_part_receive(", h)  # the call handle() makes, not a copy
+        self.assertIn("my_part_take(", h)
+        src = new.TEMPLATES / "ble-link" / "fuzz" / "seeds" / "fuzz_@NAME@"
+        seeds = f / "seeds" / "fuzz_my_part"
+        for s in src.iterdir():
+            self.assertEqual((seeds / s.name).read_bytes(), s.read_bytes(), s.name)
+        r = self.run_fw("fuzz", str(d), "--only", "fuzz_my_part", "--secs", "3")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        c = d / "components" / "my-part" / "my_part.c"
+        fixed = c.read_text()
+        fix, bug = "\tif (seq == UINT32_MAX) return -1;\n", ""
+        self.assertIn(fix, fixed)
+        try:
+            c.write_text(fixed.replace(fix, bug))
+            r = self.run_fw("fuzz", str(d), "--replay", "fuzz_my_part", str(seeds / "regress-seq-wrap"))
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("FUZZ_ASSERT", r.stdout + r.stderr)
+        finally:
+            c.write_text(fixed)
+
 if __name__ == "__main__":
     unittest.main()

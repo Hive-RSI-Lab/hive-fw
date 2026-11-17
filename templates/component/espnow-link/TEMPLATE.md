@@ -29,8 +29,8 @@ From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
 - `fuzz/fuzz_@NAME@.c` (into the project's fuzz dir): the receive side under
   `fw fuzz`. Any board near enough can send a frame (a MAC is easy to
   forge), so frames go through decode, the sink's counts and the pinger's
-  round trips as `handle()` routes them, with the counts, percentiles,
-  drift and JSON checked after each. It found two bugs, now fixed, with a
+  round trips by `@NAME@_receive`, the same call `handle()` makes, with
+  the counts, percentiles, drift and JSON checked after each. It found two bugs, now fixed, with a
   regression input each in `seeds/`: a PONG with times far apart
   overflowed the 64-bit round-trip sum (`tx_pong` now uses only times an
   echo could have written, and a delay up to `@UNAME@_RTT_MAX_US`), and
