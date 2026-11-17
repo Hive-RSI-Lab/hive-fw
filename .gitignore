@@ -3,3 +3,5 @@ build-host/
 sdkconfig
 sdkconfig.old
 __pycache__/
+build-fuzz/
+build-cov/
