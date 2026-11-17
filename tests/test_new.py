@@ -1,6 +1,8 @@
 import contextlib
 import io
 import json
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -135,6 +137,76 @@ class Templates(unittest.TestCase):
             new.create("nope", "knob", copy_hello())
 
 
+class AppTemplates(unittest.TestCase):
+    def test_each_has_a_summary_a_project_and_idfs(self):
+        apps = new.app_templates()
+        self.assertIn("remote-ready", apps)
+        for t, summary in apps.items():
+            self.assertTrue(summary, t)
+            p = new.APP_TEMPLATES / t / "project"
+            self.assertTrue((p / "fw.json").is_file(), t)
+            self.assertTrue((p / "CMakeLists.txt").is_file(), t)
+            self.assertTrue(list((p / "test" / "host").glob("test_*.c")), t)
+            self.assertEqual(new.app_idfs(t), ["v4.4.8", "v5.5.6"], t)
+
+    def test_no_key_shaped_constant(self):
+        """no 64-hex string (a key, a secret) anywhere in an app template"""
+        hexrun = re.compile(r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{64}(?![0-9A-Fa-f])")
+        for f in new.APP_TEMPLATES.rglob("*"):
+            if f.is_file():
+                self.assertIsNone(hexrun.search(f.read_text(encoding="utf-8", errors="replace")), f)
+
+    def test_create_fills_names(self):
+        d = Path(tempfile.mkdtemp()) / "demo"
+        files = new.create_app("remote-ready", "lite-demo", d)
+        self.assertTrue(files and all(f.is_file() for f in files))
+        for f in files:
+            self.assertNotIn("@", f.name)
+            self.assertNotRegex(f.read_text(), r"@[A-Z]+@", f)
+        self.assertIn("project(lite_demo)", (d / "CMakeLists.txt").read_text())
+        bench = json.loads((d / "bench.json").read_text())
+        self.assertEqual(bench["remote"], {"style": "hifi-ws", "ota": "lite_demo.bin"})
+        self.assertEqual(bench["selftest"]["pass"], 'API {"pass":true')
+        self.assertEqual(json.loads((d / "fw.json").read_text())["host_tests"], "test/host")
+
+    def test_create_refuses_bad_names_templates_and_full_dirs(self):
+        d = Path(tempfile.mkdtemp())
+        for bad in ("", "9x", "Knob", "a b", "x-", "a/b"):
+            with self.assertRaises(ValueError, msg=bad):
+                new.create_app("remote-ready", bad, d / "a")
+        with self.assertRaises(ValueError):
+            new.create_app("nope", "demo", d / "b")
+        (d / "c").mkdir()
+        (d / "c" / "mine.txt").write_text("mine\n")
+        with self.assertRaises(ValueError):
+            new.create_app("remote-ready", "demo", d / "c")
+        new.create_app("remote-ready", "demo", d / "c", force=True)
+        self.assertEqual((d / "c" / "mine.txt").read_text(), "mine\n")
+        self.assertTrue((d / "c" / "fw.json").is_file())
+
+    def test_check_app_pins_the_idf(self):
+        d = new.check_app("remote-ready", "v5.5.6", Path(tempfile.mkdtemp()) / "p")
+        self.assertEqual(json.loads((d / "fw.json").read_text())["idf"], "v5.5.6")
+        self.assertIn("project(remote_ready)", (d / "CMakeLists.txt").read_text())
+
+    def test_main_app_default_dir_and_template(self):
+        d = Path(tempfile.mkdtemp())
+        out = io.StringIO()
+        cwd = Path.cwd()
+        try:
+            os.chdir(d)
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(new.main(["app", "knob"]), 0)
+        finally:
+            os.chdir(cwd)
+        self.assertIn("from template remote-ready", out.getvalue())
+        self.assertTrue((d / "knob" / "fw.json").is_file())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(new.main(["app", "knob", str(d / "knob")]), 2)
+        self.assertIn("--force", err.getvalue())
+
+
 @unittest.skipUnless(shutil.which("cc"), "no C compiler")
 class Instantiate(unittest.TestCase):
     def run_fw(self, *args):
@@ -209,6 +281,16 @@ class Instantiate(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("espnow-link", r.stdout)
         self.assertIn("plain", r.stdout)
+        self.assertIn("remote-ready", r.stdout)
+
+    def test_app_template_passes_its_host_test(self):
+        for t in new.app_templates():
+            with self.subTest(template=t):
+                d = Path(tempfile.mkdtemp()) / "app"
+                r = self.run_fw("new", "app", "my-app", str(d), "--from", t)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                r = self.run_fw("host-test", str(d))
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
 @unittest.skipUnless(fuzz.find_clang(), "no clang that links libFuzzer")

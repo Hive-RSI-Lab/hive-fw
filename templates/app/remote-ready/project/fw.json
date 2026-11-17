@@ -1,0 +1,5 @@
+{
+  "idf": "v4.4.8",
+  "target": "esp32",
+  "host_tests": "test/host"
+}

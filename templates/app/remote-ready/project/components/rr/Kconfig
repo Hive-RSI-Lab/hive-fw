@@ -1,0 +1,10 @@
+menu "Remote-ready"
+	config RR_SELFTEST_FAIL
+		bool "Fail the self-test and the trial on purpose"
+		default n
+		help
+			Adds a "selftest_fail" check that always fails, and makes the
+			image fail its trial boot, so a board updated to it rolls back
+			to the image before it by itself. Only for a build that proves
+			the rollback works; never in a product image.
+endmenu

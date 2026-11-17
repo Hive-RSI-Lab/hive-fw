@@ -1,0 +1,15 @@
+{
+ "board": "ESP32 (@NAME@)",
+ "driver": "esp32",
+ "usb": ["10c4:ea60", "1a86:7523", "1a86:55d4", "303a"],
+ "baud": 115200,
+ "api": {"style": "json", "prefix": "api", "reply": "API", "info": "info", "wifi": "wifi"},
+ "selftest": {
+  "cmd": "api selftest \"{}\"",
+  "pass": "API {\"pass\":true",
+  "fail": "API {\"pass\":false",
+  "timeout": 30,
+  "expected": [{"checks": ["network"], "why": "not on the network yet", "offline": true}]
+ },
+ "remote": {"style": "hifi-ws", "ota": "@NAME@.bin"}
+}

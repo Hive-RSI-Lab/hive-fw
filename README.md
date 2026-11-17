@@ -11,7 +11,7 @@ pipeline.
 - `scripts/` holds one standard-library python script per job, each tested
   in `tests/`.
 - `host/unity/` is Unity v2.6.0, for host unit tests ([NOTICE](NOTICE)).
-- `templates/` holds components that worked on a board, for `fw new`.
+- `templates/` holds components that worked on a board, and whole apps to start one from (`remote-ready`), for `fw new`.
 - `faults/` is the score's corpus: real firmware with planted faults.
 - `examples/hello/` is the module's own proof: an IDF app with a host test
   and a QEMU boot.
