@@ -86,7 +86,27 @@ Rules the lab found:
   receiver's Bluetooth controller off with `WIFI_PS_NONE` for 3.6–4.1
   Mbit/s and no loss. Switching costs about 0.65 s and drops a connected
   A2DP phone, so it is a mode, not a gap between audio frames. The A2DP
-  stream's own dropouts beside the retries are not measured yet.
+  stream's own dropouts beside the retries are not measured yet (next rule).
+- What can share the radio with a live A2DP stream (Lite to Lite, a 441 Hz
+  SBC tone, IDF 4.4, both boards on Wi-Fi with modem sleep): a stream
+  alone was clean (0 bytes dropped, no dry output in 90 s; gaps up to
+  80 ms). But:
+  - Don't receive ESP-NOW while an A2DP link has to connect. With this
+    component's echo up on the sink board, every A2DP connect failed at the
+    page stage ("connect failed, reason 0" after 7.6 s), in 5 tries over
+    2 runs with a flood and with a 50 Hz ping; with no echo it connected
+    first time in 1.5 s. The IDF's coexistence table rates ESP-NOW
+    receive against BR/EDR page and page scan "S", supported but not
+    stable (`docs/en/api-guides/coexist.rst`). Connect A2DP first, or keep
+    ESP-NOW receive off until it is up. An echo started but idle wasn't
+    tested.
+  - Started after the stream, ESP-NOW itself needs only about 0.3 KB of
+    internal RAM, but an A2DP link holds about 6.3 KB on each board (a Lite
+    went from 15.3 to 9.1 KB, lows of 7.6 KB), which is the margin the rest
+    of the image had. The Hi-Fi lab's start floor (10 KB free) refused it,
+    so whether the retries cause audio dropouts is still not measured.
+    Check `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` with the stream
+    up, not at boot, before starting a run beside one.
 - Never `esp_wifi_set_ps(WIFI_PS_NONE)` while the Bluetooth controller is
   enabled: the coexistence code in the Wi-Fi blob logs "Should enable WiFi
   modem sleep when both WiFi and Bluetooth are enabled" and panics a few
