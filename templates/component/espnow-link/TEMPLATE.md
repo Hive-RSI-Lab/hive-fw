@@ -88,9 +88,9 @@ Rules the lab found:
   A2DP phone, so it is a mode, not a gap between audio frames. The A2DP
   stream's own dropouts beside the retries are not measured yet (next rule).
 - What can share the radio with a live A2DP stream (Lite to Lite, a 441 Hz
-  SBC tone, IDF 4.4, both boards Wi-Fi stations with modem sleep): the
-  station could; a stream beside it was clean (0 bytes dropped, no dry
-  output over three 30 s runs; gaps up to 80 ms). ESP-NOW could not:
+  SBC tone, IDF 4.4, both boards Wi-Fi stations with modem sleep): Wi-Fi
+  as a station could, the stream was clean beside it (0 bytes dropped, no
+  dry output over three 30 s runs; gaps up to 80 ms). ESP-NOW could not:
   - Don't receive ESP-NOW while an A2DP link may have to connect. With this
     component's echo up on the sink board, every A2DP connect failed at the
     page stage ("connect failed, reason 0" after 7.6 s), in 5 tries over
@@ -106,15 +106,16 @@ Rules the lab found:
     the lab rebooted the sink before each run to rule that out.
   - Started after the stream, ESP-NOW itself needs only about 0.3 KB of
     internal RAM when its buffers are in PSRAM (see the RAM rule below;
-    without PSRAM the queue and stack take about 12 KB). But an A2DP link holds about
-    6.3 KB on each board, with dips about 1.5 KB lower: the sink went from
-    15.3 to 9.1 KB (low 7.6 KB), and the source was at 8.9 KB, under the
-    Hi-Fi lab's 10 KB start floor, which refused the ESP-NOW start. So on
-    the Lite neither order works yet (ESP-NOW first blocks the connect,
-    the stream first leaves no RAM), and whether the retries cause audio
-    dropouts is not measured. That image needs about 16 KB free before
-    the stream. Check `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` with
-    the stream up, not at boot, before starting a run beside one.
+    without PSRAM the queue and stack take about 12 KB). But an A2DP link
+    holds about 6.3 KB on each board, with free heap dipping about 1.5 KB
+    lower: the sink went from 15.3 to 9.1 KB (low 7.6 KB), and the source
+    was at 8.9 KB, under the Hi-Fi lab's 10 KB start floor, which refused
+    the ESP-NOW start. So on the Lite neither order works yet (ESP-NOW first
+    blocks the connect, the stream first leaves no RAM), and whether the
+    retries cause audio dropouts is not measured. That image needs about
+    16 KB free before the stream. Check
+    `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` with the stream up, not
+    at boot, before starting a run beside one.
 - Never `esp_wifi_set_ps(WIFI_PS_NONE)` while the Bluetooth controller is
   enabled: the coexistence code in the Wi-Fi blob logs "Should enable WiFi
   modem sleep when both WiFi and Bluetooth are enabled" and panics a few
