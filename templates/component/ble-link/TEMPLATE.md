@@ -60,11 +60,12 @@ Rules the lab found:
   `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`); a run dips internal RAM by
   about 3.3 KB more, Bluedroid's own link state and GATT client cache.
 - BLE beside a live A2DP stream (Lite to Lite, a 441 Hz SBC tone, IDF 4.4,
-  both boards Wi-Fi stations): it made no difference to the stream. A 20 Hz
-  ping, link started after the stream was up, 2 runs of 30 s: every one of
-  1800 pings answered, no audio data lost, no output underrun, the longest
-  gap between A2DP packets 75-76 ms and 24-25 gaps over 50 ms, against
-  76 ms and 39-50 gaps with no load. With an ESP-NOW flood as well, one
+  both boards Wi-Fi stations): no measurable difference to the stream in
+  2 runs. A 20 Hz ping, link started after the stream was up, about 90 s
+  a run with the audio counted over 30 s of it: 1800 of 1800 pings
+  answered in each run, no audio data lost, no output underrun, the
+  longest gap between A2DP packets 75-76 ms (over the whole stream) and
+  24-25 gaps over 50 ms, against 76 ms and 39-50 gaps with no load. With an ESP-NOW flood as well, one
   run: no underrun, 1800 of 1800 pings, the link up in 1.2 s. A BLE link
   started before the A2DP connect was not tried; ESP-NOW receive blocks
   that connect (`espnow-link`'s rules), so start BLE after it until
@@ -76,7 +77,8 @@ Rules the lab found:
   Lite's dual-mode lab image had about 12 KB free at boot and fell under
   5 KB with the stream alone; `espnow-link`'s RAM recipe (pthread stacks
   to PSRAM, about 18 KB back) took it to 21-25 KB with the stream up,
-  and the BLE runs dipped it to 20.9 KB. Read the free internal heap with
+  and the lowest it went in any run was 20.6 KB (the source, with BLE and
+  an ESP-NOW flood beside the stream). Read the free internal heap with
   the stream up before starting a link.
 - Bluedroid's GATT server and client add about 190 KB of flash and 13 KB of
   IRAM: the full Lite image no longer fitted its app slot. Budget for it,
