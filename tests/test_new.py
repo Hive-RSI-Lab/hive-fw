@@ -27,6 +27,7 @@ class Templates(unittest.TestCase):
         self.assertIn("plain", have)
         self.assertIn("espnow-link", have)
         self.assertIn("ble-link", have)
+        self.assertIn("i2c-device", have)
         for t, summary in have.items():
             self.assertTrue(summary, t)
             self.assertTrue(list((new.TEMPLATES / t / "host_test").glob("test_*.c")), t)
@@ -47,6 +48,15 @@ class Templates(unittest.TestCase):
         self.assertEqual(json.loads((d / "fw.json").read_text())["idf"], "v5.5.6")
         self.assertTrue((d / "components" / "espnow-link" / "espnow_link_espnow.c").is_file())
         self.assertTrue((d / "test" / "host" / "test_espnow_link.c").is_file())
+
+    def test_check_project_i2c_keeps_the_mock_out_of_the_build(self):
+        d = new.check_project("i2c-device", "v4.4.8", Path(tempfile.mkdtemp()) / "p")
+        c = d / "components" / "i2c-device"
+        self.assertTrue((c / "i2c_device_esp.c").is_file())
+        self.assertTrue((c / "mock" / "i2c_device_mock.c").is_file())
+        srcs = [l for l in (c / "CMakeLists.txt").read_text().splitlines() if "SRCS" in l]
+        self.assertNotIn("mock", " ".join(srcs))
+        self.assertTrue((d / "test" / "host" / "test_i2c_device.c").is_file())
 
     def test_check_project_adds_sdkconfig(self):
         d = new.check_project("ble-link", "v4.4.8", Path(tempfile.mkdtemp()) / "p")
