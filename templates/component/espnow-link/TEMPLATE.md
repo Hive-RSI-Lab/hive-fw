@@ -26,6 +26,18 @@ Rules the lab found:
 - Only frames from the configured peer are looked at; nothing is
   forwarded. Encryption (a PMK/LMK) is off in the template: turn it on for
   anything that carries commands.
+- Internal RAM is the scarce part, not flash. On the Lite (Wi-Fi + Bluetooth
+  + audio) about 13 KB of internal RAM was left, and the first lab image
+  could not start a run: a plain `xQueueCreate` of 32 frames (~8 KB) and a
+  4 KB task stack both come from internal RAM in IDF 4.4, even with PSRAM
+  malloc on. The template now puts the queue storage (`xQueueCreateStatic`),
+  the worker's stack (`xTaskCreateStaticPinnedToCore`, needs
+  `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`) and the histogram in PSRAM
+  when the board has it, and makes the worker once: it sleeps on a task
+  notification between runs, so a static stack is never reused while a
+  deleted task still holds it. A task with a PSRAM stack must not write
+  flash (NVS); keep it to the radio. Check `heap_caps_get_free_size
+  (MALLOC_CAP_INTERNAL)` before and after start on your board.
 - IDF 5.x moved `MACSTR` to `esp_mac.h` and `esp_random` to
   `esp_random.h`, changed the receive callback to take
   `esp_now_recv_info_t` (5.0) and the send callback to take

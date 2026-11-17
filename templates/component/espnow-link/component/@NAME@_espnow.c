@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "@NAME@.h"
+#include "esp_heap_caps.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -31,10 +32,20 @@ typedef struct {
 } rx_item_t;
 
 #define QLEN 32
+#define STACK 4096
 
-/* made once and kept: a callback still running as ESP-NOW comes down never
- * touches freed memory */
+/* Made once and kept: a callback still running as ESP-NOW comes down never
+ * touches freed memory. The big parts (the queue's QLEN frames, ~8 KB, the
+ * 4 KB stack, the ~4 KB histogram) go to PSRAM when the board has it: on the
+ * hi-fi Lite, Wi-Fi + Bluetooth + audio left ~13 KB of internal RAM, and an
+ * internal queue and stack would have taken nearly all of it. The worker is
+ * made once and waits for runs, so its static stack is never reused under a
+ * task still being deleted. A task whose stack is in PSRAM must not write
+ * flash (NVS); this one doesn't. */
 static QueueHandle_t q;
+static StaticQueue_t q_ctl;
+static TaskHandle_t worker;
+static StaticTask_t worker_tcb;
 static SemaphoreHandle_t window_sem;
 static @NAME@_tx_t *tx;
 static @NAME@_rx_t *rx;
@@ -113,7 +124,19 @@ static void teardown(void) {
 	rate_changed = false;
 }
 
-static void task_main(void *arg) {
+static void *big(size_t n) { /* PSRAM when there is some, else internal */
+	return heap_caps_malloc_prefer(n, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void *stack_mem(size_t n) {
+#if CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+	return big(n);
+#else
+	return heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+}
+
+static void one_run(void) {
 	rx_item_t it;
 	uint32_t seq = 0;
 	int64_t period = 1000000 / cfg.rate_hz;
@@ -162,8 +185,14 @@ static void task_main(void *arg) {
 	}
 	teardown();
 	ESP_LOGI(TAG, "stopped: sent %u, pongs %u, rx %u", (unsigned) tx->sent, (unsigned) tx->pongs, (unsigned) rx->rx);
-	alive = false;
-	vTaskDelete(NULL);
+}
+
+static void task_main(void *arg) {
+	for (;;) {
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		one_run(); /* a run stopped before it began still tears ESP-NOW down */
+		alive = false;
+	}
 }
 
 esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
@@ -175,12 +204,21 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	if (cfg.role > @UNAME@_ROLE_FLOOD || cfg.rate_hz > 100 || cfg.len < @UNAME@_HDR || cfg.len > @UNAME@_MAX ||
 	    cfg.window > 16)
 		return ESP_ERR_INVALID_ARG;
-	if (!q) {
-		q = xQueueCreate(QLEN, sizeof(rx_item_t));
-		window_sem = xSemaphoreCreateCounting(16, 0);
-		tx = calloc(1, sizeof(*tx)); /* ~4 KB: the round-trip histogram */
-		rx = calloc(1, sizeof(*rx));
-		if (!q || !window_sem || !tx || !rx) return ESP_ERR_NO_MEM;
+	if (!worker) {
+		uint8_t *qmem = big(QLEN * sizeof(rx_item_t));
+		StackType_t *stack = stack_mem(STACK);
+		if (!window_sem) window_sem = xSemaphoreCreateCounting(16, 0);
+		if (!tx) tx = big(sizeof(*tx)); /* ~4 KB: the round-trip histogram */
+		if (!rx) rx = big(sizeof(*rx));
+		if (!qmem || !stack || !window_sem || !tx || !rx) {
+			free(qmem);
+			free(stack);
+			return ESP_ERR_NO_MEM;
+		}
+		q = xQueueCreateStatic(QLEN, sizeof(rx_item_t), qmem, &q_ctl);
+		worker = xTaskCreateStaticPinnedToCore(task_main, "@NAME@", STACK, NULL, ESP_TASK_PRIO_MIN + 5, stack,
+						       &worker_tcb, 0);
+		if (!worker) return ESP_ERR_NO_MEM;
 	}
 	xQueueReset(q);
 	while (xSemaphoreTake(window_sem, 0) == pdTRUE)
@@ -209,11 +247,7 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 		rate_changed = true;
 	}
 	run = alive = true;
-	if (xTaskCreatePinnedToCore(task_main, "@NAME@", 4096, NULL, ESP_TASK_PRIO_MIN + 5, NULL, 0) != pdPASS) {
-		run = alive = false;
-		teardown();
-		return ESP_ERR_NO_MEM;
-	}
+	xTaskNotifyGive(worker);
 	ESP_LOGI(TAG, "role %d with " MACSTR " on channel %u", cfg.role, MAC2STR(cfg.peer), channel);
 	return ESP_OK;
 }
