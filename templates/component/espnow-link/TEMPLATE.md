@@ -58,7 +58,9 @@ Rules the lab found:
   To get there at runtime: `esp_bluedroid_disable()`, wait (the Lite's
   sink waits 400 ms), `esp_bt_controller_disable()`, then
   `WIFI_PS_NONE`. To come back, put modem sleep on (`WIFI_PS_MIN_MODEM`)
-  before `esp_bt_controller_enable()`, then `esp_bluedroid_enable()`;
+  and check that `esp_wifi_set_ps()` returned `ESP_OK` before
+  `esp_bt_controller_enable()` (if it failed, leave the controller off),
+  then `esp_bluedroid_enable()`;
   profiles such as the A2DP sink have to be set up again (the Lite
   restarts). A connected phone is dropped.
 - Only frames from the configured peer are looked at; nothing is
