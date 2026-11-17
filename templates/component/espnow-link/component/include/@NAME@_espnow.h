@@ -29,6 +29,8 @@
 #include "esp_err.h"
 #include "esp_wifi_types.h"
 
+#include "@NAME@.h" /* @UNAME@_KEY */
+
 typedef enum { @UNAME@_ROLE_ECHO = 0, @UNAME@_ROLE_PING = 1, @UNAME@_ROLE_FLOOD = 2 } @NAME@_role_t;
 
 /* Wi-Fi power save for the run, put back at its end. NONE is refused
@@ -43,16 +45,21 @@ typedef struct {
 	@NAME@_role_t role;
 	uint8_t peer[6];      /* the other board's station MAC (@NAME@_parse_mac) */
 	uint32_t rate_hz;     /* ping: 1-100 a second (0: 20) */
-	uint32_t len;         /* frame bytes, @UNAME@_HDR..@UNAME@_MAX (0: 64, flood 250) */
+	uint32_t len;         /* frame bytes with the tag, @UNAME@_MIN..@UNAME@_MAX (0: 64, flood 250) */
 	uint32_t count;       /* ping and flood: frames sent, then the run ends itself (0: until
 	                       * stopped). Echo ignores it: it runs until stopped */
 	uint32_t window;      /* flood: frames in flight, 1-16 (0: 4); a send report missing
 	                       * for 1 s counts as lost and its slot is reused (report_timeouts) */
 	wifi_phy_rate_t rate; /* 0 (WIFI_PHY_RATE_1M_L): ESP-NOW's default */
 	@NAME@_ps_t ps;       /* 0 (KEEP): the board's as it is */
+	uint8_t key[@UNAME@_KEY]; /* the run's frame key, the same at both ends: fresh for each run
+	                           * and from the Hive's provisioning (or whoever starts the run),
+	                           * never a constant in the code. All zero is refused. start keeps
+	                           * it only as the HMAC states and wipes them at the run's end;
+	                           * the caller wipes its own copy (@NAME@_wipe) */
 } @NAME@_espnow_cfg_t;
 
-/* ESP_ERR_INVALID_ARG: a bad cfg; ESP_ERR_INVALID_STATE: running (or still
+/* ESP_ERR_INVALID_ARG: a bad cfg (an all-zero key included); ESP_ERR_INVALID_STATE: running (or still
  * stopping); ESP_ERR_NOT_SUPPORTED: ps NONE with Bluetooth. Not safe
  * against a concurrent start or stop (see above). */
 esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *cfg);

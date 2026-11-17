@@ -216,6 +216,8 @@ class Fuzz(unittest.TestCase):
             "regress-pong-time-overflow": ("if (f->t1 < 0 || f->t1 > t4 || t4 > MY_PART_T_MAX || f->t2 < 0 || "
                                            "f->t3 < f->t2 || f->t3 > MY_PART_T_MAX) {", "if (0) {",
                                            "runtime error"),
+            # a stranger's frames: refused by the tag alone
+            "regress-forged": ("\tif (diff) return false;\n", "", "FUZZ_ASSERT"),
         }
         try:
             for name, (fix, bug, says) in bugs.items():

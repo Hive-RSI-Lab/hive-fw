@@ -73,7 +73,7 @@ static size_t jw_end(jw_t *j) {
 #endif
 #define MAGIC0 @UNAME@_MAGIC0
 #define MAGIC1 @UNAME@_MAGIC1
-#define VERSION 2
+#define VERSION 3 /* 3: the tag */
 
 static void put32(uint8_t *p, uint32_t v) {
 	for (int i = 0; i < 4; i++) p[i] = (uint8_t) (v >> (8 * i));
@@ -101,9 +101,143 @@ static uint8_t pattern(uint32_t seq, size_t i) {
 	return (uint8_t) ((h >> (8 * (i % 4))) ^ (i * 7u) ^ 0x5a);
 }
 
-size_t @NAME@_encode(const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
+/* ------------------------------------------- SHA-256 (FIPS 180-4), for the tag */
+
+static const uint32_t K[64] = {
+	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+};
+
+#define ROR(x, n) ((x) >> (n) | (x) << (32 - (n)))
+
+void @NAME@_wipe(void *p, size_t n);
+
+static void block(@NAME@_sha256_t *s, const uint8_t *p) {
+	uint32_t w[64], a, b, c, d, e, f, g, h;
+	for (int i = 0; i < 16; i++)
+		w[i] = (uint32_t) p[4 * i] << 24 | (uint32_t) p[4 * i + 1] << 16 | (uint32_t) p[4 * i + 2] << 8 | p[4 * i + 3];
+	for (int i = 16; i < 64; i++) {
+		uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+		uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+		w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+	}
+	a = s->h[0], b = s->h[1], c = s->h[2], d = s->h[3], e = s->h[4], f = s->h[5], g = s->h[6], h = s->h[7];
+	for (int i = 0; i < 64; i++) {
+		uint32_t t1 = h + (ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i];
+		uint32_t t2 = (ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+		h = g, g = f, f = e, e = d + t1, d = c, c = b, b = a, a = t1 + t2;
+	}
+	s->h[0] += a, s->h[1] += b, s->h[2] += c, s->h[3] += d;
+	s->h[4] += e, s->h[5] += f, s->h[6] += g, s->h[7] += h;
+	@NAME@_wipe(w, sizeof(w)); /* the key's own block passes through here */
+}
+
+static void sha256_init(@NAME@_sha256_t *s) {
+	static const uint32_t H0[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+				       0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+	memcpy(s->h, H0, sizeof(H0));
+	s->len = 0;
+	s->n = 0;
+}
+
+static void sha256_update(@NAME@_sha256_t *s, const uint8_t *d, size_t n) {
+	s->len += n;
+	while (n) {
+		size_t take = 64 - s->n < n ? 64 - s->n : n;
+		memcpy(s->buf + s->n, d, take);
+		s->n += take, d += take, n -= take;
+		if (s->n == 64) {
+			block(s, s->buf);
+			s->n = 0;
+		}
+	}
+}
+
+static void sha256_final(@NAME@_sha256_t *s, uint8_t out[32]) {
+	uint64_t bits = s->len * 8;
+	uint8_t pad = 0x80;
+	sha256_update(s, &pad, 1);
+	pad = 0;
+	while (s->n != 56) sha256_update(s, &pad, 1);
+	uint8_t l[8];
+	for (int i = 0; i < 8; i++) l[i] = bits >> (56 - 8 * i);
+	sha256_update(s, l, 8);
+	for (int i = 0; i < 8; i++) {
+		out[4 * i] = s->h[i] >> 24;
+		out[4 * i + 1] = s->h[i] >> 16;
+		out[4 * i + 2] = s->h[i] >> 8;
+		out[4 * i + 3] = s->h[i];
+	}
+}
+
+/* -------------------------------------------------------------------- tag */
+
+void @NAME@_wipe(void *p, size_t n) {
+	volatile uint8_t *v = p;
+	while (n--) *v++ = 0;
+}
+
+void @NAME@_key_init(@NAME@_key_t *k, const uint8_t key[@UNAME@_KEY]) {
+	uint8_t pad[64];
+	memset(pad, 0x36, sizeof(pad));
+	for (int i = 0; i < @UNAME@_KEY; i++) pad[i] ^= key[i];
+	sha256_init(&k->in);
+	sha256_update(&k->in, pad, sizeof(pad));
+	memset(pad, 0x5c, sizeof(pad));
+	for (int i = 0; i < @UNAME@_KEY; i++) pad[i] ^= key[i];
+	sha256_init(&k->out);
+	sha256_update(&k->out, pad, sizeof(pad));
+	@NAME@_wipe(pad, sizeof(pad));
+	/* a whole block went through each: the buffers hold key bytes, not data */
+	@NAME@_wipe(k->in.buf, sizeof(k->in.buf));
+	@NAME@_wipe(k->out.buf, sizeof(k->out.buf));
+	k->ready = true;
+}
+
+void @NAME@_key_wipe(@NAME@_key_t *k) {
+	if (k) @NAME@_wipe(k, sizeof(*k));
+}
+
+static int hexval(char c);
+
+bool @NAME@_parse_key(const char *s, uint8_t key[@UNAME@_KEY]) {
+	if (!s || strlen(s) != 2 * @UNAME@_KEY) return false;
+	uint8_t k[@UNAME@_KEY];
+	for (int i = 0; i < @UNAME@_KEY; i++) {
+		int hi = hexval(s[2 * i]), lo = hexval(s[2 * i + 1]);
+		if (hi < 0 || lo < 0) {
+			@NAME@_wipe(k, sizeof(k));
+			return false;
+		}
+		k[i] = (uint8_t) (hi << 4 | lo);
+	}
+	memcpy(key, k, sizeof(k));
+	@NAME@_wipe(k, sizeof(k));
+	return true;
+}
+
+void @NAME@_tag(const @NAME@_key_t *k, const uint8_t *hdr, uint8_t tag[@UNAME@_TAG]) {
+	@NAME@_sha256_t s = k->in;
+	uint8_t d[32];
+	sha256_update(&s, hdr, @UNAME@_HDR);
+	sha256_final(&s, d);
+	s = k->out;
+	sha256_update(&s, d, sizeof(d));
+	sha256_final(&s, d);
+	memcpy(tag, d, @UNAME@_TAG);
+	@NAME@_wipe(&s, sizeof(s)); /* a copy of the key's states makes tags too */
+	@NAME@_wipe(d, sizeof(d));
+}
+
+size_t @NAME@_encode(const @NAME@_key_t *k, const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
 	size_t n = f->len;
-	if (n < @UNAME@_HDR || n > @UNAME@_MAX || n > cap) return 0;
+	if (!k || !k->ready || n < @UNAME@_MIN || n > @UNAME@_MAX || n > cap) return 0;
 	buf[0] = MAGIC0;
 	buf[1] = MAGIC1;
 	buf[2] = VERSION;
@@ -115,17 +249,25 @@ size_t @NAME@_encode(const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
 	put64(buf + 14, f->t1);
 	put64(buf + 22, f->t2);
 	put64(buf + 30, f->t3);
-	for (size_t i = @UNAME@_HDR; i < n; i++) buf[i] = pattern(f->seq, i);
+	for (size_t i = @UNAME@_HDR; i < n - @UNAME@_TAG; i++) buf[i] = pattern(f->seq, i);
+	@NAME@_tag(k, buf, buf + n - @UNAME@_TAG);
 	return n;
 }
 
-bool @NAME@_decode(const uint8_t *buf, size_t n, @NAME@_frame_t *f) {
-	if (!buf || n < @UNAME@_HDR || n > @UNAME@_MAX) return false;
+bool @NAME@_decode(const @NAME@_key_t *k, const uint8_t *buf, size_t n, @NAME@_frame_t *f) {
+	if (!k || !k->ready || !buf || n < @UNAME@_MIN || n > @UNAME@_MAX) return false;
+	/* the cheap checks first, so junk costs no hashing; they change nothing
+	 * and tell a sender nothing it doesn't know */
 	if (buf[0] != MAGIC0 || buf[1] != MAGIC1 || buf[2] != VERSION) return false;
 	if (buf[3] < @UNAME@_PING || buf[3] > @UNAME@_DATA) return false;
 	if ((size_t) (buf[4] | buf[5] << 8) != n) return false; /* truncated (or padded) */
+	/* then the tag: nothing of a frame that fails it is believed */
+	uint8_t tag[@UNAME@_TAG], diff = 0;
+	@NAME@_tag(k, buf, tag);
+	for (int i = 0; i < @UNAME@_TAG; i++) diff |= tag[i] ^ buf[n - @UNAME@_TAG + i];
+	if (diff) return false;
 	uint32_t seq = get32(buf + 10);
-	for (size_t i = @UNAME@_HDR; i < n; i++)
+	for (size_t i = @UNAME@_HDR; i < n - @UNAME@_TAG; i++)
 		if (buf[i] != pattern(seq, i)) return false;
 	f->type = buf[3];
 	f->session = get32(buf + 6);
@@ -177,11 +319,16 @@ void @NAME@_rx_data(@NAME@_rx_t *r, const @NAME@_frame_t *f, int64_t now_us) {
 		return;
 	}
 	if (r->rx == 0 || f->session != r->session) {
-		uint32_t bad = r->bad, pings = r->pings, stray = r->stray;
+		/* the DATA counts start again; the echo's side stays */
+		uint32_t bad = r->bad, pings = r->pings, ping_dup = r->ping_dup, stray = r->stray, ps = r->ping_session;
+		@NAME@_seen_t pseen = r->ping_seen;
 		@NAME@_rx_init(r);
 		r->bad = bad;
 		r->pings = pings;
+		r->ping_dup = ping_dup;
 		r->stray = stray;
+		r->ping_session = ps;
+		r->ping_seen = pseen;
 		r->session = f->session;
 		r->first_us = now_us;
 	}
@@ -226,6 +373,7 @@ size_t @NAME@_rx_json(const @NAME@_rx_t *r, char *out, size_t cap) {
 	jw_int(j, "bad", r->bad);
 	jw_int(j, "stray", r->stray);
 	jw_int(j, "pings", r->pings);
+	jw_int(j, "ping_dup", r->ping_dup);
 	jw_int(j, "bytes", (long long) r->bytes);
 	jw_num(j, "seconds", r->rx > 1 ? (r->last_us - r->first_us) / 1e6 : 0, 3);
 	jw_num(j, "kbps", @NAME@_rx_kbps(r), 1);
@@ -247,14 +395,23 @@ size_t @NAME@_take(uint8_t *dst, size_t cap, const uint8_t *src, size_t n) {
 	return n;
 }
 
-@NAME@_got_t @NAME@_receive(@NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs, const uint8_t *buf, size_t n,
-                            int64_t t_us, @NAME@_frame_t *pong) {
+@NAME@_got_t @NAME@_receive(const @NAME@_key_t *k, @NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs,
+                            const uint8_t *buf, size_t n, int64_t t_us, @NAME@_frame_t *pong) {
 	@NAME@_frame_t f;
-	if (!@NAME@_decode(buf, n, &f)) {
+	if (!@NAME@_decode(k, buf, n, &f)) {
 		@NAME@_rx_bad(rx);
 		return @UNAME@_GOT_BAD;
 	}
 	if (echo && f.type == @UNAME@_PING) {
+		/* one answer per PING: a replayed one gets none */
+		if (f.session != rx->ping_session || !rx->pings) {
+			memset(&rx->ping_seen, 0, sizeof(rx->ping_seen));
+			rx->ping_session = f.session;
+		}
+		if (@NAME@_seen(&rx->ping_seen, f.seq) != 0) {
+			rx->ping_dup++;
+			return @UNAME@_GOT_OTHER;
+		}
 		@NAME@_pong_for(&f, t_us, 0, pong);
 		rx->pings++;
 		return @UNAME@_GOT_REPLY;

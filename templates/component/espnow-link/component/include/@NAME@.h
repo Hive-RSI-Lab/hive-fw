@@ -17,6 +17,34 @@
  * number, its own length (a truncated frame is caught) and a payload filled
  * with a pattern derived from the sequence, so a corrupt frame is caught
  * rather than counted.
+ *
+ * Every frame ends with a tag: HMAC-SHA256 of the header under the run's key,
+ * cut to @UNAME@_TAG bytes. The payload needs no covering: it is a function
+ * of seq and the length, both in the header, and decode checks every byte.
+ * A frame whose tag fails is bad before its session or seq is looked at, so a
+ * stranger in radio range (any MAC, any seq) can't make a frame of their own:
+ * all a forged frame moves is bad. The key is given at the start of each run
+ * (from the project's provisioning, never a constant in the code: both ends
+ * need the same one, and a fresh one per run); the ipad and opad states are
+ * computed once per key, so a frame costs two SHA-256 blocks whatever its
+ * length (on the hi-fi Lite lab's ESP32 at 240 MHz, under 190 us a frame).
+ *
+ * What the tag doesn't stop: a stranger sending again, within the same run,
+ * a genuine frame they heard (a replay; across runs it fails, as each run has
+ * a fresh key). A replayed DATA frame is a dup (or old, or fills a gap the
+ * flooder's real frame left: lost goes down by one, reorder up). A replayed
+ * PING is answered once only: the echo remembers the seqs it answered and
+ * counts a repeat as ping_dup. A replayed PONG is a dup at the pinger, unless
+ * the pinger missed the real one: then it is taken, late, and lowers the
+ * loss, raises the round trip and skews that second's clock offset. Nor does
+ * it stop jamming: in the lab, 30 forged frames a second (all counted bad)
+ * cut a flood's throughput ninefold.
+ *
+ * A fresh key per run means a fresh echo too: start the echo again with each
+ * new pinger or flooder run's key. An echo left running under an old key
+ * takes a new session from frames tagged with that key (DATA after 1 s,
+ * and a new PING session clears what it answered), so a stranger who
+ * recorded an earlier run could play it back to it.
  */
 #pragma once
 
@@ -25,7 +53,10 @@
 #include <stdint.h>
 
 #define @UNAME@_HDR 38  /* magic 2, version 1, type 1, length 2, session 4, seq 4, t1 t2 t3 8 each */
+#define @UNAME@_TAG 8   /* the HMAC-SHA256 tag at the end of the frame, truncated */
+#define @UNAME@_MIN (@UNAME@_HDR + @UNAME@_TAG) /* the shortest frame */
 #define @UNAME@_MAX 250 /* ESP-NOW's largest payload */
+#define @UNAME@_KEY 16  /* bytes of the run's key */
 #define @UNAME@_WINDOW 1024 /* sequence numbers the duplicate check remembers */
 #define @UNAME@_RTT_BIN_US 100
 #define @UNAME@_RTT_BINS 1000 /* 0 to 100 ms; slower ones land in the last bin */
@@ -38,13 +69,38 @@ typedef struct {
 	uint8_t type;
 	uint32_t session, seq;
 	int64_t t1, t2, t3; /* microseconds on the clock of the board that wrote each */
-	uint16_t len;       /* the whole frame, @UNAME@_HDR..@UNAME@_MAX */
+	uint16_t len;       /* the whole frame with its tag, @UNAME@_MIN..@UNAME@_MAX */
 } @NAME@_frame_t;
 
-/* the frame's bytes, f->len of them (the payload filled); 0 when it doesn't fit */
-size_t @NAME@_encode(const @NAME@_frame_t *f, uint8_t *buf, size_t cap);
-/* false: not one of ours, or damaged */
-bool @NAME@_decode(const uint8_t *buf, size_t n, @NAME@_frame_t *f);
+typedef struct {
+	uint32_t h[8];
+	uint64_t len;
+	uint8_t buf[64];
+	size_t n;
+} @NAME@_sha256_t;
+
+/* the run's key, ready to tag with: the HMAC inner and outer states. Until
+ * key_init (and after key_wipe) it isn't ready, and encode and decode refuse
+ * it: an all-zero state is a key anyone could compute. */
+typedef struct {
+	@NAME@_sha256_t in, out;
+	bool ready;
+} @NAME@_key_t;
+
+void @NAME@_key_init(@NAME@_key_t *k, const uint8_t key[@UNAME@_KEY]);
+void @NAME@_key_wipe(@NAME@_key_t *k);
+/* zeroes n bytes in a way the compiler keeps, for key bytes on their way out */
+void @NAME@_wipe(void *p, size_t n);
+/* 32 hex digits; false (key untouched) for anything else */
+bool @NAME@_parse_key(const char *s, uint8_t key[@UNAME@_KEY]);
+/* the tag of a frame's header (its first @UNAME@_HDR bytes) */
+void @NAME@_tag(const @NAME@_key_t *k, const uint8_t *hdr, uint8_t tag[@UNAME@_TAG]);
+
+/* the frame's bytes, f->len of them (payload filled, tag at the end); 0 when
+ * it doesn't fit or k isn't ready */
+size_t @NAME@_encode(const @NAME@_key_t *k, const @NAME@_frame_t *f, uint8_t *buf, size_t cap);
+/* false: not one of ours, damaged, or not tagged with this key */
+bool @NAME@_decode(const @NAME@_key_t *k, const uint8_t *buf, size_t n, @NAME@_frame_t *f);
 
 typedef struct {
 	uint32_t top; /* the highest sequence number seen + 1; 0 none */
@@ -62,9 +118,12 @@ typedef struct {
 	uint32_t rx, dup, reorder, old, bad;
 	uint32_t stray; /* DATA of another session while this one is live */
 	uint32_t pings; /* PINGs answered (echo) */
+	uint32_t ping_dup; /* PINGs already answered: a replay gets no second PONG */
 	uint64_t bytes;
 	int64_t first_us, last_us;
 	@NAME@_seen_t seen;
+	uint32_t ping_session; /* the session of the PINGs in ping_seen */
+	@NAME@_seen_t ping_seen;
 } @NAME@_rx_t;
 
 void @NAME@_rx_init(@NAME@_rx_t *r);
@@ -132,7 +191,7 @@ typedef enum {
 	@UNAME@_GOT_USED,  /* counted (DATA, a PONG) */
 	@UNAME@_GOT_REPLY, /* a PING: send *pong back (its t3 stamped at the send) */
 	@UNAME@_GOT_BAD,   /* not one of ours, or damaged: counted in rx->bad */
-	@UNAME@_GOT_OTHER, /* a good frame this end has no use for */
+	@UNAME@_GOT_OTHER, /* a good frame this end has no use for (or a PING it answered already) */
 } @NAME@_got_t;
 
 /* A radio callback's copy of a received value into its queue item's buffer
@@ -144,10 +203,11 @@ size_t @NAME@_take(uint8_t *dst, size_t cap, const uint8_t *src, size_t n);
 /* What an end does with the bytes of one frame from the radio (n as
  * received: never trusted). An echo end answers PINGs and counts DATA into
  * rx; an end that takes PONGs (pongs) counts them into tx. rx is always
- * needed, tx only with pongs. t_us: the arrival time. The radio task and the
- * fuzzer both call this, so what is fuzzed is what runs. */
-@NAME@_got_t @NAME@_receive(@NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs, const uint8_t *buf, size_t n,
-                            int64_t t_us, @NAME@_frame_t *pong);
+ * needed, tx only with pongs. t_us: the arrival time. A frame not tagged
+ * with k is bad, whatever it says. The radio task and the fuzzer both call
+ * this, so what is fuzzed is what runs. */
+@NAME@_got_t @NAME@_receive(const @NAME@_key_t *k, @NAME@_rx_t *rx, @NAME@_tx_t *tx, bool echo, bool pongs,
+                            const uint8_t *buf, size_t n, int64_t t_us, @NAME@_frame_t *pong);
 
 /* "30:76:f5:2d:74:3c", "30-76-..." or "3076f52d743c" (a board's device id) */
 bool @NAME@_parse_mac(const char *s, uint8_t mac[6]);

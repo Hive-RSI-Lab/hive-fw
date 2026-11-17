@@ -53,6 +53,7 @@ static SemaphoreHandle_t window_sem;
 static @NAME@_tx_t *tx;
 static @NAME@_rx_t *rx;
 static rx_item_t *rx_it; /* the receive callback's item: made once, in PSRAM when there is some */
+static @NAME@_key_t *key; /* the run's frame key: never logged or reported, wiped as the run ends */
 
 static volatile bool run, alive;
 static @NAME@_espnow_cfg_t cfg;
@@ -99,7 +100,7 @@ static bool send_frame(@NAME@_frame_t *f) {
 	int64_t t = esp_timer_get_time();
 	if (f->type == @UNAME@_PING) f->t1 = t;
 	if (f->type == @UNAME@_PONG) f->t3 = t;
-	size_t n = @NAME@_encode(f, buf, sizeof(buf));
+	size_t n = @NAME@_encode(key, f, buf, sizeof(buf));
 	if (!n) return false;
 	esp_err_t e = esp_now_send(cfg.peer, buf, n);
 	@NAME@_tx_sent(tx, n, e == ESP_OK, t);
@@ -108,7 +109,7 @@ static bool send_frame(@NAME@_frame_t *f) {
 
 static void handle(const rx_item_t *it) {
 	@NAME@_frame_t pong;
-	switch (@NAME@_receive(rx, tx, cfg.role == @UNAME@_ROLE_ECHO, cfg.role == @UNAME@_ROLE_PING, it->data, it->len,
+	switch (@NAME@_receive(key, rx, tx, cfg.role == @UNAME@_ROLE_ECHO, cfg.role == @UNAME@_ROLE_PING, it->data, it->len,
 	                       it->t_us, &pong)) {
 	case @UNAME@_GOT_REPLY:
 		send_frame(&pong);
@@ -132,6 +133,7 @@ static void teardown(void) {
 	wifi_ps_type_t now_ps;
 	if (ps_changed && esp_wifi_get_ps(&now_ps) == ESP_OK && now_ps == ps_set) esp_wifi_set_ps(ps_before);
 	rate_changed = ps_changed = false;
+	if (key) @NAME@_key_wipe(key); /* the run's key goes with the run */
 }
 
 static void *big(size_t n) { /* PSRAM when there is some, else internal */
@@ -207,13 +209,27 @@ static void task_main(void *arg) {
 	}
 }
 
+static esp_err_t start(const uint8_t k[@UNAME@_KEY], bool any);
+
 esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	if (alive) return ESP_ERR_INVALID_STATE;
 	cfg = *c;
+	/* the key lives on only in key (as HMAC states): not in this copy */
+	uint8_t k[@UNAME@_KEY], any = 0;
+	memcpy(k, cfg.key, sizeof(k));
+	@NAME@_wipe(cfg.key, sizeof(cfg.key));
+	for (size_t i = 0; i < sizeof(k); i++) any |= k[i];
+	esp_err_t e = start(k, any);
+	@NAME@_wipe(k, sizeof(k));
+	return e;
+}
+
+static esp_err_t start(const uint8_t k[@UNAME@_KEY], bool any) {
+	if (!any) return ESP_ERR_INVALID_ARG; /* all zero: no key was given */
 	if (!cfg.rate_hz) cfg.rate_hz = 20;
 	if (!cfg.len) cfg.len = cfg.role == @UNAME@_ROLE_FLOOD ? @UNAME@_MAX : 64;
 	if (!cfg.window) cfg.window = 4;
-	if (cfg.role > @UNAME@_ROLE_FLOOD || cfg.rate_hz > 100 || cfg.len < @UNAME@_HDR || cfg.len > @UNAME@_MAX ||
+	if (cfg.role > @UNAME@_ROLE_FLOOD || cfg.rate_hz > 100 || cfg.len < @UNAME@_MIN || cfg.len > @UNAME@_MAX ||
 	    cfg.window > 16 || cfg.ps > @UNAME@_PS_MAX)
 		return ESP_ERR_INVALID_ARG;
 #if CONFIG_BT_ENABLED
@@ -233,7 +249,8 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 		if (!tx) tx = big(sizeof(*tx)); /* ~4 KB: the round-trip histogram */
 		if (!rx) rx = big(sizeof(*rx));
 		if (!rx_it) rx_it = big(sizeof(*rx_it));
-		if (!qmem || !stack || !window_sem || !tx || !rx || !rx_it) {
+		if (!key) key = big(sizeof(*key));
+		if (!qmem || !stack || !window_sem || !tx || !rx || !rx_it || !key) {
 			free(qmem);
 			free(stack);
 			return ESP_ERR_NO_MEM;
@@ -255,23 +272,29 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	for (uint32_t i = 0; i < cfg.window; i++) xSemaphoreGive(window_sem);
 	@NAME@_tx_init(tx, esp_random());
 	@NAME@_rx_init(rx);
+	@NAME@_key_init(key, k); /* the worker is idle */
 	q_full = other = report_timeouts = 0;
 	ps_err = ESP_OK;
 
 	wifi_second_chan_t second;
 	if (esp_wifi_get_channel(&channel, &second) != ESP_OK) channel = 0;
 	esp_err_t e = esp_now_init();
-	if (e != ESP_OK) return e;
+	if (e != ESP_OK) {
+		@NAME@_key_wipe(key);
+		return e;
+	}
 	esp_now_peer_info_t p = {.channel = 0, .ifidx = WIFI_IF_STA, .encrypt = false};
 	memcpy(p.peer_addr, cfg.peer, 6);
 	if ((e = esp_now_add_peer(&p)) != ESP_OK || (e = esp_now_register_recv_cb(recv_cb)) != ESP_OK ||
 	    (e = esp_now_register_send_cb(send_cb)) != ESP_OK) {
 		esp_now_deinit();
+		@NAME@_key_wipe(key);
 		return e;
 	}
 	if (cfg.rate != WIFI_PHY_RATE_1M_L) {
 		if ((e = esp_wifi_config_espnow_rate(WIFI_IF_STA, cfg.rate)) != ESP_OK) {
 			esp_now_deinit();
+			@NAME@_key_wipe(key);
 			return e;
 		}
 		rate_changed = true;

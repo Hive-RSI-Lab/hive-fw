@@ -24,13 +24,14 @@ Wi-Fi station on the home AP and the A2DP sink up beside it).
   notifications. `count` ends ping and flood runs; echo runs until stopped.
   `on_end` says when a run ended by itself.
 - `fuzz/fuzz_@NAME@.c` (into the project's fuzz dir): the receive side under
-  `fw fuzz`. The link has no pairing and the echo knows its peer only by a
-  BLE address, which is easy to forge, so every value written or notified
+  `fw fuzz`. The echo knows its peer only by a BLE address, which is
+  easy to forge, and only the frame tag stops a stranger's frames, so every value written or notified
   goes through `@NAME@_take` (as the callbacks queue it: too long counts
   as bad) and `@NAME@_receive`, the same calls `post()` and `handle()`
   make, with the counts, percentiles, drift and JSON checked after each;
   and the advertisement's mark walk on raw bytes. The counting is
-  `espnow-link`'s, so its two regression inputs are in `seeds/` too.
+  `espnow-link`'s, so its three regression inputs (`regress-forged`
+  included) are in `seeds/` too.
 
 Rules the lab found:
 
@@ -89,8 +90,16 @@ Rules the lab found:
   `CONFIG_BT_BLE_42_FEATURES_SUPPORTED` for the legacy advertising and scan
   calls. Bluedroid must stay up once a run has started: restarting it
   (deinit and init) leaves the cached GATT apps stale and is not supported.
-- No pairing, bonding or encryption: anything that carries commands needs
-  LE Secure Connections or keys at the application layer.
+- No pairing, bonding or link encryption: each frame carries
+  `espnow-link`'s tag (HMAC-SHA256 of the header under the run's key,
+  `cfg.key` from the project's provisioning), so a stranger's forged or
+  seq-jumped frames count as bad and move nothing but bad (a replay
+  within a run is a dup, and an echo needs a fresh start per run's key:
+  see `@NAME@.h`). Pairing would not do:
+  Just Works, the only mode two headless boards have, is open to a man in
+  the middle, and a bond is per pair of boards where the key is per run.
+  The frames aren't secret: anything that must be needs LE Secure
+  Connections or encryption at the application layer.
 - Data and method: hifi-lite-lab `lab/ble.md`.
 
 `fw new component` adds the Bluetooth lines in template.json to the
@@ -105,5 +114,5 @@ BLE only (IDF's default) or dual mode both work.
 Use: `fw new component NAME --from ble-link`, call `NAME_ble_bt_init()`
 (it brings up the controller and Bluedroid only if nothing has), then
 `NAME_ble_start(&cfg)` on both boards (echo on one with the other's Wi-Fi
-MAC as `peer`, ping or flood on the other), `NAME_ble_result(buf, cap)` for
+MAC as `peer`, ping or flood on the other, the same fresh `cfg.key` on both), `NAME_ble_result(buf, cap)` for
 the JSON. `fw new check ble-link` builds it on every IDF in template.json.
