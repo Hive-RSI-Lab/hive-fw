@@ -62,20 +62,34 @@ Rules the lab found:
   are separate and untouched. The GATT apps, the service and the worker are
   made once and kept, so a late callback never finds freed memory.
 - The lifecycle has races the first version got wrong, all fixed here:
-  - a connect still pending at stop keeps Bluedroid trying for up to
-    3 × 30 s, into the next run: stop cancels it and waits for the answer;
+  - a connect still pending at stop keeps Bluedroid trying into the next
+    run: on IDF v5.5.6 and later stop cancels it
+    (`esp_ble_gattc_cancel_open`) and waits for the answer; older IDFs
+    (v4.4 among them) have no cancel, and a GAP disconnect can't stop a
+    connect that has no link yet, so it runs out at
+    `CONFIG_BT_BLE_ESTAB_LINK_CONN_TOUT` (30 s), start refuses until then,
+    and a late connect is closed at once;
   - start refuses while the last run's link or connect is still up;
   - an advertising start that completes after stop is stopped again;
   - a rejected connection stops the advertising, so the echo advertises
-    again when it drops, or the real peer can't get in.
+    again when it drops, or the real peer can't get in;
+  - `on_end` is called after `running()` turns false, on the worker task
+    (its stack may be in PSRAM: no flash or NVS writes there).
+- Tested on the ESP32 only. On IDF v5 the other chips need
+  `CONFIG_BT_BLE_42_FEATURES_SUPPORTED` for the legacy advertising and scan
+  calls. Bluedroid must stay up once a run has started: restarting it
+  (deinit and init) leaves the cached GATT apps stale and is not supported.
 - No pairing, bonding or encryption: anything that carries commands needs
   LE Secure Connections or keys at the application layer.
 - Data and method: hifi-lite-lab `lab/ble.md`.
 
 `fw new component` adds the Bluetooth lines in template.json to the
 project's `sdkconfig.defaults` (only the ones it doesn't set already).
-Delete the project's `sdkconfig`, or set them in menuconfig, for a project
-that was configured before. The controller's mode stays the project's:
+For a project that was configured before, set them in menuconfig too (or
+`idf.py menuconfig` and save): deleting `sdkconfig` instead drops every
+menuconfig change that isn't in the defaults file. Lines in
+`sdkconfig.defaults.<target>` files are not read or changed. A project on
+NimBLE gets a warning: this component needs Bluedroid. The controller's mode stays the project's:
 BLE only (IDF's default) or dual mode both work.
 
 Use: `fw new component NAME --from ble-link`, call `NAME_ble_bt_init()`

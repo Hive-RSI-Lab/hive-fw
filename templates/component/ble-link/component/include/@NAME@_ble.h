@@ -23,6 +23,12 @@
  * and the worker task are made once and kept, so a late callback never
  * finds freed memory.
  *
+ * Tested on the ESP32 only (on v5 other chips need
+ * CONFIG_BT_BLE_42_FEATURES_SUPPORTED for the legacy advertising and scan
+ * calls). Bluedroid must stay up once a run has started: the GATT apps are
+ * registered once and their ifs cached, so a Bluedroid deinit and init
+ * (or a controller restart) is not supported.
+ *
  * Measured on two ESP32-WROVER-E boards beside Wi-Fi STA and the A2DP sink
  * (see TEMPLATE.md).
  *
@@ -51,8 +57,10 @@ typedef struct {
 	float interval_ms; /* ping and flood: the connection interval to ask for, 7.5-100
 	                    * (0: the stack's, 15 ms in Bluedroid) */
 	uint32_t scan_s;   /* ping and flood: how long to look for the peer, 3-60 (0: 20) */
-	/* the run ended by itself (count reached, link lost or failed), called on
-	 * the worker task: don't call start or stop from it */
+	/* the run ended by itself (count reached, link lost or failed). Called on
+	 * the worker task after running() turned false: don't call start or stop
+	 * from it, and don't write flash or NVS (the worker's stack may be in
+	 * PSRAM): post to a task of your own for anything more than a flag */
 	void (*on_end)(bool ok);
 } @NAME@_ble_cfg_t;
 
@@ -66,7 +74,10 @@ esp_err_t @NAME@_ble_bt_init(void);
  * ESP_ERR_TIMEOUT: a GATT app didn't register; ESP_FAIL: the stack refused
  * the advertising data. Not safe against a concurrent start or stop. */
 esp_err_t @NAME@_ble_start(const @NAME@_ble_cfg_t *cfg);
-/* stops scanning or advertising, closes the link (waits up to 4 s) */
+/* stops scanning or advertising, closes the link (waits up to 4 s). A
+ * connect still pending is cancelled on IDF v5.5.6 and later; older IDFs
+ * can't, so it runs out at CONFIG_BT_BLE_ESTAB_LINK_CONN_TOUT (30 s) and
+ * start returns ESP_ERR_INVALID_STATE until then */
 void @NAME@_ble_stop(void);
 bool @NAME@_ble_running(void);
 /* {"role","ok","phase",...,"conn":{...},"heap":{...},"tx":{...}} (echo adds

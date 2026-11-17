@@ -229,6 +229,15 @@ static void test_adv(void) {
 	size_t n = @NAME@_adv_build(mac, p, sizeof(b) - (size_t) (p - b));
 	TEST_ASSERT_EQUAL(@UNAME@_ADV_LEN, n);
 	TEST_ASSERT_TRUE(@NAME@_adv_has_mark(b, (size_t) (p - b) + n, mac));
+	/* the mark last, ending exactly at the 31-byte limit */
+	uint8_t e[31], *q = e;
+	size_t pad = sizeof(e) - @UNAME@_ADV_LEN - 2; /* a name structure before it fills the rest */
+	*q++ = (uint8_t) (pad + 1), *q++ = 0x09;
+	memset(q, 'x', pad), q += pad;
+	TEST_ASSERT_EQUAL(@UNAME@_ADV_LEN, @NAME@_adv_build(mac, q, sizeof(e) - (size_t) (q - e)));
+	TEST_ASSERT_EQUAL(sizeof(e), (size_t) (q - e) + @UNAME@_ADV_LEN);
+	TEST_ASSERT_TRUE(@NAME@_adv_has_mark(e, sizeof(e), mac));
+	TEST_ASSERT_FALSE(@NAME@_adv_has_mark(e, sizeof(e) - 1, mac));
 	/* manufacturer data one byte longer than the mark is not the mark */
 	uint8_t c[20];
 	memcpy(c, a, @UNAME@_ADV_LEN);

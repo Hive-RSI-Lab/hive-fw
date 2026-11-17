@@ -24,8 +24,14 @@ from the project root. A template.json beside it may list the IDF versions
 it is known to build on ({"idf": ["v4.4.8", "v5.5.6"]}) and the sdkconfig
 lines it needs ({"sdkconfig": ["CONFIG_BT_ENABLED=y"]}): `fw new component`
 adds to PROJECT/sdkconfig.defaults, under a comment naming the component,
-each one whose option the file doesn't set already (a project configured
-before keeps its sdkconfig: delete it, or set them in menuconfig).
+each one whose option the file doesn't set already, under its name or an
+older one IDF still reads (CONFIG_BLUEDROID_ENABLED for
+CONFIG_BT_BLUEDROID_ENABLED). An option from a Kconfig choice is not added
+when the file picks another member (NimBLE where Bluedroid is wanted): that
+is a warning to settle by hand. A project configured before keeps its
+sdkconfig: set the lines in menuconfig too (deleting sdkconfig would drop
+every menuconfig change that isn't in the defaults). sdkconfig.defaults.<target>
+files are not read.
 
 `fw new check` proves the templates still build: each one goes into a copy
 of examples/hello once per IDF it lists (hello's own IDF when it lists
@@ -128,16 +134,66 @@ def _key(line: str) -> str | None:
     return None
 
 
+# older names IDF still reads (its components' sdkconfig.rename), for the
+# options templates set
+OLD_NAMES = {
+    "CONFIG_BT_BLUEDROID_ENABLED": ["CONFIG_BLUEDROID_ENABLED"],
+    "CONFIG_BT_NIMBLE_ENABLED": ["CONFIG_NIMBLE_ENABLED"],
+    "CONFIG_BT_GATTS_ENABLE": ["CONFIG_GATTS_ENABLE"],
+    "CONFIG_BT_GATTC_ENABLE": ["CONFIG_GATTC_ENABLE"],
+}
+# Kconfig choices: setting one member =y picks it over the others
+CHOICES = [["CONFIG_BT_BLUEDROID_ENABLED", "CONFIG_BT_NIMBLE_ENABLED"]]
+
+
+def _names(key: str) -> set[str]:
+    return {key, *OLD_NAMES.get(key, [])}
+
+
+def _defaults(project: Path) -> tuple[Path, str, dict[str, str]]:
+    """PROJECT/sdkconfig.defaults, its text, and {option: line} for what it sets"""
+    f = project / "sdkconfig.defaults"
+    text = f.read_text(encoding="utf-8") if f.is_file() else ""
+    have = {}
+    for ln in text.splitlines():
+        k = _key(ln)
+        if k:
+            have[k] = ln.strip()
+    return f, text, have
+
+
+def _picks_other(key: str, have: dict[str, str]) -> str | None:
+    """the member of key's choice that the project picks instead, if any"""
+    for group in CHOICES:
+        if key in group:
+            for other in group:
+                if other != key and any(have.get(n, "").endswith("=y") for n in _names(other)):
+                    return other
+    return None
+
+
+def sdkconfig_warnings(template: str, project: Path) -> list[str]:
+    """the template's choice options the project's sdkconfig.defaults picks otherwise"""
+    _, _, have = _defaults(project)
+    out = []
+    for ln in template_json(template).get("sdkconfig") or []:
+        k = _key(ln)
+        other = k and ln.strip().endswith("=y") and _picks_other(k, have)
+        if other:
+            out.append(f"{template} wants {k}, but sdkconfig.defaults picks {other}: not changed, settle it by hand")
+    return out
+
+
 def add_sdkconfig(template: str, name: str, project: Path) -> list[str]:
     """Append the template's sdkconfig lines that PROJECT/sdkconfig.defaults
-    doesn't set yet; the lines added."""
+    doesn't set yet (under any of their names), except a choice member when
+    the file picks another (sdkconfig_warnings); the lines added."""
     want = template_json(template).get("sdkconfig") or []
     if not want:
         return []
-    f = project / "sdkconfig.defaults"
-    text = f.read_text(encoding="utf-8") if f.is_file() else ""
-    have = {_key(ln) for ln in text.splitlines()} - {None}
-    add = [ln for ln in want if _key(ln) and _key(ln) not in have]
+    f, text, have = _defaults(project)
+    add = [ln for ln in want
+           if _key(ln) and not (_names(_key(ln)) & have.keys()) and not _picks_other(_key(ln), have)]
     if add:
         sep = "" if not text or text.endswith("\n") else "\n"
         f.write_text(text + sep + f"# {name} (fw new, template {template})\n" + "\n".join(add) + "\n", encoding="utf-8")
@@ -225,7 +281,10 @@ def main(argv: list[str] | None = None) -> int:
     if added:
         print(f"  sdkconfig.defaults: added {', '.join(added)}")
         if (project / "sdkconfig").is_file():
-            print("  (sdkconfig was made before: delete it, or set those in menuconfig, for them to take)")
+            print("  (sdkconfig was made before: set those in menuconfig too, for them to take;"
+                  " deleting sdkconfig would drop menuconfig changes not in the defaults)")
+    for w in sdkconfig_warnings(template, project):
+        print(f"  warning: {w}", file=sys.stderr)
     md = TEMPLATES / template / "TEMPLATE.md"
     if md.is_file():
         print(f"  (read {md} for what it does and what it was measured at)")
