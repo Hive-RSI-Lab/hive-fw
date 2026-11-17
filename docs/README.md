@@ -156,17 +156,18 @@ code is unchanged, and the board's `build/` never sees the shim.
 | `fw.json` `"qemu"` key | what it wraps | why |
 |---|---|---|
 | `"eth": "emac"` | `esp_eth_mac_new_esp32`, `esp_eth_phy_new_{lan87xx,ip101,rtl8201,ksz80xx,...}` | QEMU's Ethernet is open_eth, not the EMAC ([openeth.c](../qemu/openeth.c)) |
-| `"adc1": 0` or `{"6": 1700}` | `adc1_get_raw`, which returns the raw value given for the channel (else 0) | no SAR ADC: the read spins forever holding a spinlock, and the core's tick stops, so the boot hangs silently ([adc.c](../qemu/adc.c)) |
+| `"adc1": 0` or `{"6": 1700}` | `adc1_get_raw`, which returns the raw value given for the channel (0 for one not given, -1 outside 0-7) | no SAR ADC: the read spins forever holding a spinlock, and the core's tick stops, so the boot hangs silently ([adc.c](../qemu/adc.c)) |
 | `"gpio": {"4": 0}` (or any `"scenarios"`) | `gpio_get_level`, which returns the level given for the pin, else the real pin; `fw_gpio_level`/`fw_gpio_mask` can be changed at run time | inputs QEMU's GPIO never drives (a PD power-good line, an amp's fault pin) ([gpio.c](../qemu/gpio.c)) |
 | `"scenarios"` | `vTaskDelay`, which first hogs or gives back heap to match `fw_heap_leave` | a heap squeeze on demand ([heap.c](../qemu/heap.c)) |
 | `"wifi": "off"` | `esp_wifi_start`, `_stop`, `_connect`, `_disconnect`, `_scan_start`, `_scan_stop`, which all succeed | no radio: PHY calibration panics with `LoadStorePIFAddrError` in `register_chipv7_phy` ([nowifi.c](../qemu/nowifi.c)) |
 
 The shims are compiled with `-g`, so gdb knows their variables' types for
-a scenario's `set` steps. They are linked in at build time, with the values
-from `"adc1"` and `"gpio"` baked in as their starting values: after you
-change one of those keys, add or remove `"scenarios"`, or edit a
-`qemu/*.c` file, run `fw build --qemu` again. `fw qemu` boots the image
-already in `build-qemu/` and doesn't rebuild it.
+a scenario's `set` steps. Everything in this table, and `"sdkconfig"`, is
+fixed at build time, with `"adc1"` and `"gpio"` baked in as the shims'
+starting values. After you change any of those keys, add or remove
+`"scenarios"`, or edit a `qemu/*.c` file, run `fw build --qemu` again.
+`fw qemu` boots whatever is already in `build-qemu/`. It doesn't rebuild it
+or warn when it's stale. A scenario's steps and overrides need no rebuild.
 
 Two more keys shape the flash image `fw qemu` boots, with no rebuild:
 
