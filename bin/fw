@@ -7,6 +7,9 @@
 #   fw build [PROJECT]        set-target on a fresh tree, then idf.py build
 #   fw idf [PROJECT] -- ARGS  any idf.py command (menuconfig needs a tty)
 #   fw host-test [PROJECT]    the project's unit tests on this machine (gcc + Unity)
+#   fw new component NAME [PROJECT] [--from T] [--into DIR]   a component from a
+#                             template that worked on a board, with its host test
+#                             (fw new list: the templates; fw new check: build them all)
 #   fw fuzz [PROJECT] [--secs N] [--new NAME]   libFuzzer harnesses on the host (clang)
 #   fw coverage [PROJECT] [--src P] [--lines] [--min PCT]   what the host tests run (gcov)
 #   fw qemu [PROJECT]         boot the build in Espressif's QEMU, judge the UART log
@@ -43,6 +46,7 @@ case "$cmd" in
 setup) exec "$py" "$s/setup.py" "$@" ;;
 env | idf | build | flash | monitor | ports | doctor) exec "$py" "$s/fwidf.py" "$cmd" "$@" ;;
 host-test) exec "$py" "$s/hosttest.py" "$@" ;;
+new) exec "$py" "$s/new.py" "$@" ;;
 coverage) exec "$py" "$s/coverage.py" "$@" ;;
 fuzz) exec "$py" "$s/fuzz.py" "$@" ;;
 qemu) exec "$py" "$s/qemu.py" "$@" ;;
@@ -58,7 +62,7 @@ test)
 	cd "$here"
 	exec "$py" -m unittest discover -s tests -t . "$@"
 	;;
-"" | -h | --help | help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//' ;;
+"" | -h | --help | help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//' ;;
 *)
 	echo "fw: no command $cmd (fw help)" >&2
 	exit 2
