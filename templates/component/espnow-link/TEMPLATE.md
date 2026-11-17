@@ -3,15 +3,29 @@
 From the hi-fi Lite lab (two ESP32-WROVER-E boards, IDF v4.4.8).
 
 - `@NAME@.c` / `include/@NAME@.h`: plain C, host-tested. The frame both ends
-  speak (magic, type, session, sequence, three timestamps, a payload pattern
-  that catches corruption), a 1024-frame duplicate window, the sink's counts
+  speak: a 38-byte header (magic 2, version 1, type 1, the frame's total
+  length 2, session 4, sequence 4, three 8-byte timestamps) and a payload
+  pattern derived from every byte of the sequence number. A frame whose
+  length field isn't the bytes received (truncated or padded) or whose
+  payload doesn't match is counted bad, not used. Frame version 2 (version
+  1 had a 36-byte header without the length). A DATA frame of another
+  session counts as `stray` while the current session was heard within the
+  last second; after a second of silence the new session is adopted. Also
+  a 1024-frame duplicate window, the sink's counts
   (loss, duplicates, reordering, throughput) and the pinger's statistics:
   a round-trip histogram (p50/p95/p99), and NTP-style clock offset with a
-  least-squares drift in ppm from the best sample of each second (the base
-  for synced playback across boards). Results come out as JSON.
+  least-squares drift in ppm from the best sample of each second, the
+  still-open second included (the base for synced playback across boards).
+  Results come out as JSON.
 - `@NAME@_espnow.c` / `include/@NAME@_espnow.h`: the radio side. Roles echo
   (answer pings, count data), ping (rate_hz frames a second) and flood (as
-  fast as the radio takes them, `window` in flight).
+  fast as the radio takes them, `window` in flight; a send report missing
+  for 1 s counts as lost and its slot is reused, `report_timeouts`).
+  `count` ends ping and flood runs; echo runs until stopped. The stop puts
+  the ESP-NOW rate back while ESP-NOW is still up (before
+  `esp_now_deinit`), then the power save, but only if it is still the one
+  the run set; the result reports the run's power save, not the live one.
+  Start and stop must not run concurrently: callers serialise them.
 
 Rules the lab found:
 
@@ -21,8 +35,9 @@ Rules the lab found:
 - `esp_now_send` returns before the frame is on air; the send callback is
   the MAC-level ack. A flood that doesn't wait for the callbacks (a window)
   gets ESP_ERR_ESPNOW_NO_MEM, not more throughput.
-- Wi-Fi modem sleep (the default with Bluetooth on) delays and drops
-  frames to a sleeping peer; measure with the power save you will ship.
+- Wi-Fi modem sleep (the default with Bluetooth on) is a likely cause of
+  delayed and lost frames to a sleeping peer, but the lab did not isolate
+  it (see below); measure with the power save you will ship.
 - With Bluetooth in the image, never `esp_wifi_set_ps(WIFI_PS_NONE)`: the
   coexistence code in the Wi-Fi blob logs "Should enable WiFi modem sleep
   when both WiFi and Bluetooth are enabled" and panics a few seconds later
@@ -51,18 +66,26 @@ Rules the lab found:
   deprecated (it still works; a warning, not an error). `fw new check
   espnow-link` builds it on every IDF in template.json.
 - What to expect (two Lites in one house, station on the home AP, Bluetooth
-  on, `WIFI_PS_MIN_MODEM`): 64-byte ping at 1 Mbps, RTT median 3.7 ms,
-  p99 30–75 ms, 3–9% of frames lost after the MAC's retries; a 250-byte
-  flood peaks near 400 kbps received at 24M with a third of frames lost.
-  Every lost frame was a MAC nack (the receiver's radio asleep), none was
-  dropped inside the boards. Good for control and sync messages with an
-  app-level retry; not for streaming audio. Data and method:
-  hifi-lite-lab `lab/espnow.md`.
+  on, `WIFI_PS_MIN_MODEM`): 64-byte ping at 1 Mbps (light ping traffic),
+  RTT median 3.7 ms, RTT p99 27.6–75.8 ms, 2.55–9.25% of frames lost after
+  the MAC's retries; a 250-byte flood peaks near 400 kbps received at 24M
+  with a third of frames lost. Every lost frame was a MAC-level failure (a
+  nack after the retries); none was dropped inside the boards. Modem sleep
+  on the receiver is a likely cause but was not isolated: a `ps none`
+  comparison isn't possible with Bluetooth on. Good for control and sync
+  messages with an app-level retry; not for streaming audio. Data and
+  method: hifi-lite-lab `lab/espnow.md`.
 - A radio experiment can hang a board (one Lite stopped answering right
   after a run and stayed off the network). An unattended board needs
   `CONFIG_ESP_TASK_WDT_PANIC=y` so a stuck task restarts it, and a check
   that restarts it after long enough off its management link; record why
   it restarted (an RTC no-init marker) so the next self-test reports it.
+  Run those checks from an `esp_timer`, not from the task they watch and
+  not under its lock: the task watchdog only sees subscribed tasks, so a
+  task stuck holding a mutex can sit forever unless something outside it
+  notices that its tick stopped (the Lite lab restarts after 3 min). Give
+  the task watchdog room (15 s on the Lite) so a slow flash write
+  doesn't trip it.
 
 Use: `fw new component NAME --from espnow-link`, call
 `NAME_espnow_start(&cfg)` on both boards after `esp_wifi_start()` (echo on

@@ -73,7 +73,7 @@ static size_t jw_end(jw_t *j) {
 #endif
 #define MAGIC0 @UNAME@_MAGIC0
 #define MAGIC1 @UNAME@_MAGIC1
-#define VERSION 1
+#define VERSION 2
 
 static void put32(uint8_t *p, uint32_t v) {
 	for (int i = 0; i < 4; i++) p[i] = (uint8_t) (v >> (8 * i));
@@ -93,8 +93,13 @@ static int64_t get64(const uint8_t *p) {
 	return (int64_t) v;
 }
 
-/* the payload byte at offset i of a frame with this sequence number */
-static uint8_t pattern(uint32_t seq, size_t i) { return (uint8_t) ((seq * 31u + i * 7u) ^ 0x5a); }
+/* the payload byte at offset i of a frame with this sequence number: every
+ * byte of the sequence number reaches the pattern (a multiply by an odd
+ * constant carries each byte upwards), so a damaged seq is caught too */
+static uint8_t pattern(uint32_t seq, size_t i) {
+	uint32_t h = seq * 2654435761u;
+	return (uint8_t) ((h >> (8 * (i % 4))) ^ (i * 7u) ^ 0x5a);
+}
 
 size_t @NAME@_encode(const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
 	size_t n = f->len;
@@ -103,11 +108,13 @@ size_t @NAME@_encode(const @NAME@_frame_t *f, uint8_t *buf, size_t cap) {
 	buf[1] = MAGIC1;
 	buf[2] = VERSION;
 	buf[3] = f->type;
-	put32(buf + 4, f->session);
-	put32(buf + 8, f->seq);
-	put64(buf + 12, f->t1);
-	put64(buf + 20, f->t2);
-	put64(buf + 28, f->t3);
+	buf[4] = (uint8_t) n; /* the frame's own length: a truncated one is caught */
+	buf[5] = (uint8_t) (n >> 8);
+	put32(buf + 6, f->session);
+	put32(buf + 10, f->seq);
+	put64(buf + 14, f->t1);
+	put64(buf + 22, f->t2);
+	put64(buf + 30, f->t3);
 	for (size_t i = @UNAME@_HDR; i < n; i++) buf[i] = pattern(f->seq, i);
 	return n;
 }
@@ -116,15 +123,16 @@ bool @NAME@_decode(const uint8_t *buf, size_t n, @NAME@_frame_t *f) {
 	if (!buf || n < @UNAME@_HDR || n > @UNAME@_MAX) return false;
 	if (buf[0] != MAGIC0 || buf[1] != MAGIC1 || buf[2] != VERSION) return false;
 	if (buf[3] < @UNAME@_PING || buf[3] > @UNAME@_DATA) return false;
-	uint32_t seq = get32(buf + 8);
+	if ((size_t) (buf[4] | buf[5] << 8) != n) return false; /* truncated (or padded) */
+	uint32_t seq = get32(buf + 10);
 	for (size_t i = @UNAME@_HDR; i < n; i++)
 		if (buf[i] != pattern(seq, i)) return false;
 	f->type = buf[3];
-	f->session = get32(buf + 4);
+	f->session = get32(buf + 6);
 	f->seq = seq;
-	f->t1 = get64(buf + 12);
-	f->t2 = get64(buf + 20);
-	f->t3 = get64(buf + 28);
+	f->t1 = get64(buf + 14);
+	f->t2 = get64(buf + 22);
+	f->t3 = get64(buf + 30);
 	f->len = (uint16_t) n;
 	return true;
 }
@@ -161,11 +169,16 @@ int @NAME@_seen(@NAME@_seen_t *s, uint32_t seq) {
 void @NAME@_rx_init(@NAME@_rx_t *r) { memset(r, 0, sizeof(*r)); }
 
 void @NAME@_rx_data(@NAME@_rx_t *r, const @NAME@_frame_t *f, int64_t now_us) {
+	if (r->rx && f->session != r->session && now_us - r->last_us < @UNAME@_SESSION_IDLE_US) {
+		r->stray++;
+		return;
+	}
 	if (r->rx == 0 || f->session != r->session) {
-		uint32_t bad = r->bad, pings = r->pings;
+		uint32_t bad = r->bad, pings = r->pings, stray = r->stray;
 		@NAME@_rx_init(r);
 		r->bad = bad;
 		r->pings = pings;
+		r->stray = stray;
 		r->session = f->session;
 		r->first_us = now_us;
 	}
@@ -208,6 +221,7 @@ size_t @NAME@_rx_json(const @NAME@_rx_t *r, char *out, size_t cap) {
 	jw_int(j, "reorder", r->reorder);
 	jw_int(j, "old", r->old);
 	jw_int(j, "bad", r->bad);
+	jw_int(j, "stray", r->stray);
 	jw_int(j, "pings", r->pings);
 	jw_int(j, "bytes", (long long) r->bytes);
 	jw_num(j, "seconds", r->rx > 1 ? (r->last_us - r->first_us) / 1e6 : 0, 3);
@@ -328,12 +342,23 @@ double @NAME@_tx_rtt_pct(const @NAME@_tx_t *t, double p) {
 	return (double) t->rtt_max_us;
 }
 
+/* the fit's sums with the window still open added, so a run's last second
+ * counts too (without closing it: more pongs may land in it) */
 bool @NAME@_tx_drift_ppm(const @NAME@_tx_t *t, double *ppm) {
-	double n = t->windows;
-	if (t->windows < 3) return false;
-	double den = n * t->sxx - t->sx * t->sx;
+	double n = t->windows, sx = t->sx, sy = t->sy, sxx = t->sxx, sxy = t->sxy;
+	if (t->win_any) {
+		int64_t x0 = t->windows ? t->x0_us : t->win_start_us, y0 = t->windows ? t->y0_us : t->win_offset_us;
+		double x = (t->win_start_us - x0) / 1e6, y = (double) (t->win_offset_us - y0);
+		n++;
+		sx += x;
+		sy += y;
+		sxx += x * x;
+		sxy += x * y;
+	}
+	if (n < 3) return false;
+	double den = n * sxx - sx * sx;
 	if (den <= 0) return false;
-	*ppm = (n * t->sxy - t->sx * t->sy) / den; /* us per s */
+	*ppm = (n * sxy - sx * sy) / den; /* us per s */
 	return true;
 }
 
@@ -373,7 +398,7 @@ size_t @NAME@_tx_json(const @NAME@_tx_t *t, char *out, size_t cap) {
 		jw_obj(j, "clock");
 		jw_int(j, "offset_us", (long long) t->offset_us);
 		jw_int(j, "offset_delay_us", (long long) t->offset_delay_us);
-		jw_int(j, "windows", t->windows);
+		jw_int(j, "windows", t->windows + (t->win_any ? 1 : 0)); /* the open one too */
 		double ppm;
 		if (@NAME@_tx_drift_ppm(t, &ppm))
 			jw_num(j, "drift_ppm", ppm, 3);

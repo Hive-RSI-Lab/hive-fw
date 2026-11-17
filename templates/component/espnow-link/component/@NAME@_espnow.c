@@ -53,8 +53,10 @@ static @NAME@_rx_t *rx;
 static volatile bool run, alive;
 static @NAME@_espnow_cfg_t cfg;
 static uint8_t channel;
-static bool rate_changed;
-static volatile uint32_t q_full, other;
+static bool rate_changed, ps_changed;
+static wifi_ps_type_t ps_before, ps_set; /* the board's before the run; the run's */
+static esp_err_t ps_err;                 /* esp_wifi_set_ps refused the cfg's (the run kept ps_before) */
+static volatile uint32_t q_full, other, report_timeouts;
 
 /* the callbacks' shapes changed in IDF 5.0 (receive) and 5.5 (send) */
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -63,13 +65,17 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int n)
 #else
 static void recv_cb(const uint8_t *mac, const uint8_t *data, int n) {
 #endif
+	/* on the Wi-Fi task only, one call at a time: its item is static (~260
+	 * bytes off that task's stack; xQueueSend copies it) */
 	int64_t t = esp_timer_get_time();
 	if (!run || n <= 0 || n > @UNAME@_MAX) return;
 	if (memcmp(mac, cfg.peer, 6)) { /* only the peer's frames are looked at */
 		other++;
 		return;
 	}
-	rx_item_t it = {.len = (uint8_t) n, .t_us = t};
+	static rx_item_t it;
+	it.len = (uint8_t) n;
+	it.t_us = t;
 	memcpy(it.data, data, n);
 	if (xQueueSend(q, &it, 0) != pdTRUE) q_full++;
 }
@@ -119,9 +125,13 @@ static void teardown(void) {
 	run = false;
 	esp_now_unregister_recv_cb();
 	esp_now_unregister_send_cb();
-	esp_now_deinit();
+	/* the rate while ESP-NOW is still up, as it was set */
 	if (rate_changed) esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_1M_L);
-	rate_changed = false;
+	esp_now_deinit();
+	/* the power save only if it is still the run's: someone may have set it since */
+	wifi_ps_type_t now_ps;
+	if (ps_changed && esp_wifi_get_ps(&now_ps) == ESP_OK && now_ps == ps_set) esp_wifi_set_ps(ps_before);
+	rate_changed = ps_changed = false;
 }
 
 static void *big(size_t n) { /* PSRAM when there is some, else internal */
@@ -151,7 +161,9 @@ static void one_run(void) {
 				vTaskDelay(pdMS_TO_TICKS(20));
 				continue;
 			}
-			xSemaphoreTake(window_sem, pdMS_TO_TICKS(200)); /* a lost report must not stall the flood */
+			/* a send report missing for 1 s counts as lost and its slot is
+			 * reused: a lost report must not stall the flood */
+			if (xSemaphoreTake(window_sem, pdMS_TO_TICKS(1000)) != pdTRUE) report_timeouts++;
 			f.type = @UNAME@_DATA;
 			f.seq = seq;
 			if (send_frame(&f))
@@ -202,8 +214,14 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	if (!cfg.len) cfg.len = cfg.role == @UNAME@_ROLE_FLOOD ? @UNAME@_MAX : 64;
 	if (!cfg.window) cfg.window = 4;
 	if (cfg.role > @UNAME@_ROLE_FLOOD || cfg.rate_hz > 100 || cfg.len < @UNAME@_HDR || cfg.len > @UNAME@_MAX ||
-	    cfg.window > 16)
+	    cfg.window > 16 || cfg.ps > @UNAME@_PS_MAX)
 		return ESP_ERR_INVALID_ARG;
+#if CONFIG_BT_ENABLED
+	/* With Bluetooth in the image, the coexistence code in the Wi-Fi blob
+	 * panics a few seconds after modem sleep is turned off ("Should enable
+	 * WiFi modem sleep when both WiFi and Bluetooth are enabled") */
+	if (cfg.ps == @UNAME@_PS_NONE) return ESP_ERR_NOT_SUPPORTED;
+#endif
 	if (!worker) {
 		uint8_t *qmem = big(QLEN * sizeof(rx_item_t));
 		StackType_t *stack = stack_mem(STACK);
@@ -215,10 +233,16 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 			free(stack);
 			return ESP_ERR_NO_MEM;
 		}
-		q = xQueueCreateStatic(QLEN, sizeof(rx_item_t), qmem, &q_ctl);
+		if (!q)
+			q = xQueueCreateStatic(QLEN, sizeof(rx_item_t), qmem, &q_ctl);
+		else
+			free(qmem); /* made on an earlier try whose task failed */
 		worker = xTaskCreateStaticPinnedToCore(task_main, "@NAME@", STACK, NULL, ESP_TASK_PRIO_MIN + 5, stack,
 						       &worker_tcb, 0);
-		if (!worker) return ESP_ERR_NO_MEM;
+		if (!worker) { /* static creation can't fail on memory; if it does, the stack goes back */
+			free(stack);
+			return ESP_ERR_NO_MEM;
+		}
 	}
 	xQueueReset(q);
 	while (xSemaphoreTake(window_sem, 0) == pdTRUE)
@@ -226,7 +250,8 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 	for (uint32_t i = 0; i < cfg.window; i++) xSemaphoreGive(window_sem);
 	@NAME@_tx_init(tx, esp_random());
 	@NAME@_rx_init(rx);
-	q_full = other = 0;
+	q_full = other = report_timeouts = 0;
+	ps_err = ESP_OK;
 
 	wifi_second_chan_t second;
 	if (esp_wifi_get_channel(&channel, &second) != ESP_OK) channel = 0;
@@ -246,6 +271,17 @@ esp_err_t @NAME@_espnow_start(const @NAME@_espnow_cfg_t *c) {
 		}
 		rate_changed = true;
 	}
+	if (esp_wifi_get_ps(&ps_before) != ESP_OK) ps_before = WIFI_PS_MIN_MODEM;
+	ps_set = ps_before;
+	if (cfg.ps != @UNAME@_PS_KEEP) {
+		wifi_ps_type_t want = cfg.ps == @UNAME@_PS_NONE  ? WIFI_PS_NONE
+				      : cfg.ps == @UNAME@_PS_MIN ? WIFI_PS_MIN_MODEM
+								 : WIFI_PS_MAX_MODEM;
+		if ((ps_err = esp_wifi_set_ps(want)) == ESP_OK) { /* refused: carry on with the one it had */
+			ps_set = want;
+			ps_changed = want != ps_before;
+		}
+	}
 	run = alive = true;
 	xTaskNotifyGive(worker);
 	ESP_LOGI(TAG, "role %d with " MACSTR " on channel %u", cfg.role, MAC2STR(cfg.peer), channel);
@@ -263,9 +299,26 @@ bool @NAME@_espnow_running(void) { return alive; }
 size_t @NAME@_espnow_result(char *out, size_t cap) {
 	static const char *const ROLES[] = {"echo", "ping", "flood"};
 	if (!tx || !out || cap < 2) return 0;
-	int n = snprintf(out, cap, "{\"role\":\"%s\",\"channel\":%u,\"queue_full\":%u,\"other\":%u,\"tx\":", ROLES[cfg.role],
-			 channel, (unsigned) q_full, (unsigned) other);
+	/* ps: the run's, as set at its start (the board's own may differ now) */
+	const char *ps = ps_set == WIFI_PS_NONE        ? "none"
+	                 : ps_set == WIFI_PS_MIN_MODEM ? "min"
+	                 : ps_set == WIFI_PS_MAX_MODEM ? "max"
+	                                               : "?";
+	int n = snprintf(out, cap, "{\"role\":\"%s\",\"channel\":%u,\"ps\":\"%s\",", ROLES[cfg.role], channel, ps);
 	if (n < 0 || (size_t) n >= cap) goto full;
+	if (ps_err != ESP_OK) {
+		int k = snprintf(out + n, cap - n, "\"ps_error\":\"%s\",", esp_err_to_name(ps_err));
+		if (k < 0 || (size_t) k >= cap - n) goto full;
+		n += k;
+	}
+	if (cfg.role == @UNAME@_ROLE_FLOOD) {
+		int k = snprintf(out + n, cap - n, "\"report_timeouts\":%u,", (unsigned) report_timeouts);
+		if (k < 0 || (size_t) k >= cap - n) goto full;
+		n += k;
+	}
+	int m = snprintf(out + n, cap - n, "\"queue_full\":%u,\"other\":%u,\"tx\":", (unsigned) q_full, (unsigned) other);
+	if (m < 0 || (size_t) m >= cap - n) goto full;
+	n += m;
 	size_t k = @NAME@_tx_json(tx, out + n, cap - n);
 	if (!k) goto full;
 	n += k;

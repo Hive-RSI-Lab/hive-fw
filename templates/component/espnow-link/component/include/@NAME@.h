@@ -14,8 +14,9 @@
  * arrived, duplicates, reordering and gaps, and the bytes per second.
  *
  * Frames carry a session number (a new run starts a new one), a sequence
- * number and a payload filled with a pattern derived from the sequence, so
- * a corrupt frame is caught rather than counted.
+ * number, its own length (a truncated frame is caught) and a payload filled
+ * with a pattern derived from the sequence, so a corrupt frame is caught
+ * rather than counted.
  */
 #pragma once
 
@@ -23,7 +24,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define @UNAME@_HDR 36  /* magic 2, version 1, type 1, session 4, seq 4, t1 t2 t3 8 each */
+#define @UNAME@_HDR 38  /* magic 2, version 1, type 1, length 2, session 4, seq 4, t1 t2 t3 8 each */
 #define @UNAME@_MAX 250 /* ESP-NOW's largest payload */
 #define @UNAME@_WINDOW 1024 /* sequence numbers the duplicate check remembers */
 #define @UNAME@_RTT_BIN_US 100
@@ -56,6 +57,7 @@ int @NAME@_seen(@NAME@_seen_t *s, uint32_t seq);
 typedef struct {
 	uint32_t session;
 	uint32_t rx, dup, reorder, old, bad;
+	uint32_t stray; /* DATA of another session while this one is live */
 	uint32_t pings; /* PINGs answered (echo) */
 	uint64_t bytes;
 	int64_t first_us, last_us;
@@ -63,7 +65,11 @@ typedef struct {
 } @NAME@_rx_t;
 
 void @NAME@_rx_init(@NAME@_rx_t *r);
-/* a DATA frame (a frame of a new session starts the counts again) */
+/* a DATA frame. The first frame's session is adopted; a frame of another
+ * session starts the counts again only once this one has been silent for
+ * @UNAME@_SESSION_IDLE_US (a late frame of the last run is counted as
+ * stray, not taken for a new run: sessions are random, not ordered). */
+#define @UNAME@_SESSION_IDLE_US 1000000
 void @NAME@_rx_data(@NAME@_rx_t *r, const @NAME@_frame_t *f, int64_t now_us);
 /* a frame that failed to decode */
 void @NAME@_rx_bad(@NAME@_rx_t *r);
@@ -108,7 +114,8 @@ void @NAME@_tx_acked(@NAME@_tx_t *t, bool acked);
 void @NAME@_tx_pong(@NAME@_tx_t *t, const @NAME@_frame_t *f, int64_t t4);
 /* round trip at percentile p (0..100), in microseconds; -1 none */
 double @NAME@_tx_rtt_pct(const @NAME@_tx_t *t, double p);
-/* drift of the echo's clock against ours in ppm; false: under 3 windows */
+/* drift of the echo's clock against ours in ppm, the open window counted;
+ * false: under 3 windows */
 bool @NAME@_tx_drift_ppm(const @NAME@_tx_t *t, double *ppm);
 double @NAME@_tx_kbps(const @NAME@_tx_t *t);
 /* the sender's result as one JSON object; the length, or 0 when cap is too small (512 is plenty) */

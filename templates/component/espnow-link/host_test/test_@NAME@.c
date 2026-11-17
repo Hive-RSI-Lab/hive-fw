@@ -18,15 +18,34 @@ static void test_frames(void) {
 	TEST_ASSERT_TRUE(@NAME@_decode(buf, 100, &g));
 	TEST_ASSERT_TRUE(g.type == @UNAME@_PING && g.session == 7 && g.seq == 12345);
 	TEST_ASSERT_TRUE(g.t1 == -5 && g.t2 == (1LL << 40) && g.t3 == INT64_MAX && g.len == 100);
-	/* damage outside the times and session is caught */
+	/* damage outside the times and session is caught: a flipped seq byte
+	 * breaks the payload's pattern, a flipped type byte makes an unknown
+	 * type, a flipped length byte a length that isn't the frame's */
 	for (int i = 0; i < 100; i += 13) {
-		if ((i >= 12 && i < @UNAME@_HDR) || (i >= 4 && i < 8)) continue;
+		if ((i >= 14 && i < @UNAME@_HDR) || (i >= 6 && i < 10)) continue;
 		uint8_t c[@UNAME@_MAX];
 		memcpy(c, buf, 100);
 		c[i] ^= 0x10;
 		TEST_ASSERT_FALSE(@NAME@_decode(c, 100, &g));
 	}
+	/* every seq byte reaches the pattern */
+	for (int i = 10; i < 14; i++) {
+		uint8_t c[@UNAME@_MAX];
+		memcpy(c, buf, 100);
+		c[i] ^= 0x01;
+		TEST_ASSERT_FALSE(@NAME@_decode(c, 100, &g));
+	}
 	TEST_ASSERT_FALSE(@NAME@_decode(buf, @UNAME@_HDR - 1, &g));
+	/* a frame cut short (or padded) is caught by its length */
+	for (size_t n = @UNAME@_HDR; n < 100; n += 7) TEST_ASSERT_FALSE(@NAME@_decode(buf, n, &g));
+	TEST_ASSERT_FALSE(@NAME@_decode(buf, 101, &g));
+	TEST_ASSERT_TRUE(@NAME@_decode(buf, 100, &g));
+	{
+		uint8_t c[@UNAME@_MAX];
+		memcpy(c, buf, 100);
+		c[4] = 99; /* the length says 99: still caught at 100 bytes */
+		TEST_ASSERT_FALSE(@NAME@_decode(c, 100, &g));
+	}
 	f.len = @UNAME@_HDR;
 	TEST_ASSERT_EQUAL(@UNAME@_HDR, @NAME@_encode(&f, buf, sizeof(buf)));
 	f.len = @UNAME@_MAX + 1;
@@ -45,6 +64,7 @@ static void test_seen(void) {
 	TEST_ASSERT_EQUAL(1, @NAME@_seen(&s, 3));
 	TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, 5 + @UNAME@_WINDOW));
 	TEST_ASSERT_EQUAL(-1, @NAME@_seen(&s, 5)); /* fell out of the window */
+	TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, 6));  /* just inside: its old bit was cleared as the window moved */
 	memset(&s, 0, sizeof(s));
 	for (uint32_t q = 0; q < 5000; q += 2) TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, q));
 	TEST_ASSERT_EQUAL(0, @NAME@_seen(&s, 4997)); /* a reused slot isn't a duplicate */
@@ -83,11 +103,21 @@ static void test_receiver(void) {
 	TEST_ASSERT_NOT_NULL(strstr(out, "\"loss_pct\":2.000"));
 	TEST_ASSERT_EQUAL(0, @NAME@_rx_json(&r, out, 20)); /* too small: nothing, not half */
 	TEST_ASSERT_EQUAL_STRING("", out);
-	/* a new session starts afresh, keeping the damaged count */
+	/* a frame of another session while this one is live is a stray (a late
+	 * frame of the last run must not wipe this run's counts) */
 	f.session = 2;
 	f.seq = 0;
-	@NAME@_rx_data(&r, &f, now);
-	TEST_ASSERT_TRUE(r.rx == 1 && r.session == 2 && r.dup == 0 && r.bad == 1);
+	@NAME@_rx_data(&r, &f, now + 1000);
+	TEST_ASSERT_TRUE(r.rx == 98 && r.session == 1 && r.stray == 1);
+	TEST_ASSERT_TRUE(@NAME@_rx_json(&r, out, sizeof(out)) > 0);
+	TEST_ASSERT_NOT_NULL(strstr(out, "\"stray\":1,"));
+	/* once this one has been silent a second, a new session starts afresh,
+	 * keeping the damaged and stray counts */
+	@NAME@_rx_data(&r, &f, now + @UNAME@_SESSION_IDLE_US);
+	TEST_ASSERT_TRUE(r.rx == 1 && r.session == 2 && r.dup == 0 && r.bad == 1 && r.stray == 1);
+	f.session = 1; /* and the old one is now the stray */
+	@NAME@_rx_data(&r, &f, now + @UNAME@_SESSION_IDLE_US + 10);
+	TEST_ASSERT_TRUE(r.rx == 1 && r.session == 2 && r.stray == 2);
 }
 
 static void test_sender(void) {
@@ -124,8 +154,31 @@ static void test_sender(void) {
 	TEST_ASSERT_EQUAL(1900, t->rtt_min_us);
 	TEST_ASSERT_DOUBLE_WITHIN(100, 1900, @NAME@_tx_rtt_pct(t, 50));
 	TEST_ASSERT_TRUE(@NAME@_tx_rtt_pct(t, 99) > 9000);
+	TEST_ASSERT_TRUE(t->windows >= 18);
 	TEST_ASSERT_TRUE(@NAME@_tx_drift_ppm(t, &ppm));
 	TEST_ASSERT_DOUBLE_WITHIN(0.5, 20.0, ppm);
+	/* the last second is still open: the fit counts it */
+	TEST_ASSERT_TRUE(t->win_any);
+	{
+		/* 2.5 s of pings: two windows closed, the third still open, and
+		 * the fit has three points */
+		@NAME@_tx_t *u = calloc(1, sizeof(*u));
+		@NAME@_tx_init(u, 3);
+		for (int q = 0; q < 25; q++) {
+			int64_t t1 = 1000000 + q * 100000LL, t2 = (int64_t) (t1 * (1 + 50e-6)) + 1000;
+			@NAME@_frame_t p = {@UNAME@_PONG, 3, (uint32_t) q, t1, t2, t2 + 10, 64};
+			@NAME@_tx_sent(u, 64, true, t1);
+			@NAME@_tx_pong(u, &p, t1 + 1010);
+		}
+		double d;
+		TEST_ASSERT_TRUE(u->windows == 2 && u->win_any);
+		TEST_ASSERT_TRUE(@NAME@_tx_drift_ppm(u, &d));
+		TEST_ASSERT_DOUBLE_WITHIN(1.0, 50.0, d);
+		char o[1024];
+		TEST_ASSERT_TRUE(@NAME@_tx_json(u, o, sizeof(o)) > 0);
+		TEST_ASSERT_NOT_NULL(strstr(o, "\"windows\":3,")); /* the open one too */
+		free(u);
+	}
 	TEST_ASSERT_DOUBLE_WITHIN(30, 5000000 + 20e-6 * 19.5e6, (double) t->offset_us);
 	char out[1024];
 	TEST_ASSERT_TRUE(@NAME@_tx_json(t, out, sizeof(out)) > 0);
