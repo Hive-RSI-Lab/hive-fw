@@ -21,7 +21,11 @@ host_test/ tree and a TEMPLATE.md (its first line is the one-line summary).
 In file names and contents @NAME@ becomes the C name, @UNAME@ the same in
 capitals, @COMPONENT@ the component's directory name and @DIR@ its path
 from the project root. A template.json beside it may list the IDF versions
-it is known to build on ({"idf": ["v4.4.8", "v5.5.6"]}).
+it is known to build on ({"idf": ["v4.4.8", "v5.5.6"]}) and the sdkconfig
+lines it needs ({"sdkconfig": ["CONFIG_BT_ENABLED=y"]}): `fw new component`
+adds to PROJECT/sdkconfig.defaults, under a comment naming the component,
+each one whose option the file doesn't set already (a project configured
+before keeps its sdkconfig: delete it, or set them in menuconfig).
 
 `fw new check` proves the templates still build: each one goes into a copy
 of examples/hello once per IDF it lists (hello's own IDF when it lists
@@ -109,10 +113,40 @@ def create(template: str, name: str, project: Path, into: Path | None = None, fo
     return [d for _, d in files]
 
 
+def template_json(template: str) -> dict:
+    f = TEMPLATES / template / "template.json"
+    return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+
+
+def _key(line: str) -> str | None:
+    """CONFIG_X for "CONFIG_X=v" and "# CONFIG_X is not set" (fwidf.sdkconfig_key)"""
+    line = line.strip()
+    if line.startswith("CONFIG_") and "=" in line:
+        return line.split("=", 1)[0]
+    if line.startswith("# CONFIG_") and line.endswith(" is not set"):
+        return line[2:-len(" is not set")]
+    return None
+
+
+def add_sdkconfig(template: str, name: str, project: Path) -> list[str]:
+    """Append the template's sdkconfig lines that PROJECT/sdkconfig.defaults
+    doesn't set yet; the lines added."""
+    want = template_json(template).get("sdkconfig") or []
+    if not want:
+        return []
+    f = project / "sdkconfig.defaults"
+    text = f.read_text(encoding="utf-8") if f.is_file() else ""
+    have = {_key(ln) for ln in text.splitlines()} - {None}
+    add = [ln for ln in want if _key(ln) and _key(ln) not in have]
+    if add:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        f.write_text(text + sep + f"# {name} (fw new, template {template})\n" + "\n".join(add) + "\n", encoding="utf-8")
+    return add
+
+
 def idfs(template: str) -> list[str]:
     """the IDF versions a template says it builds on; hello's when it says none"""
-    f = TEMPLATES / template / "template.json"
-    listed = json.loads(f.read_text(encoding="utf-8")).get("idf", []) if f.is_file() else []
+    listed = template_json(template).get("idf", [])
     return listed or [fwlib.read_pins(HELLO).get("idf", "")]
 
 
@@ -123,6 +157,7 @@ def check_project(template: str, idf: str, dest: Path) -> Path:
     pins["idf"] = idf
     (dest / "fw.json").write_text(json.dumps(pins, indent=1) + "\n", encoding="utf-8")
     create(template, template.replace("_", "-"), dest)
+    add_sdkconfig(template, template.replace("_", "-"), dest)
     return dest
 
 
@@ -186,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     print(f"fw new: {a.name} from template {template}:")
     for f in files:
         print("  " + str(f.relative_to(project)))
+    added = add_sdkconfig(template, a.name, project)
+    if added:
+        print(f"  sdkconfig.defaults: added {', '.join(added)}")
+        if (project / "sdkconfig").is_file():
+            print("  (sdkconfig was made before: delete it, or set those in menuconfig, for them to take)")
     md = TEMPLATES / template / "TEMPLATE.md"
     if md.is_file():
         print(f"  (read {md} for what it does and what it was measured at)")
