@@ -345,6 +345,9 @@ def run(bench, plan, suites=None, heap_min_floor=None, out=None, at=None):
             if why.startswith(SKIP):
                 r["pass"], r["skip"] = None, True
             out.append(r)
+    if signal.getsignal(signal.SIGTERM) is _stop:   # under main: the sending is over, so a stop from here on
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # would only lose the report (it said "after N of N")
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     if stopped:
         dropped = bench.clear() if hasattr(bench, "clear") else ""
         out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before, "clear": dropped},
@@ -463,9 +466,7 @@ def _go(a, doc, done):
     res, at, note = [], {}, ""
     n_all = sum(len(cs) for s, cs in plan["suites"].items() if not suites or s in suites)
     try:
-        run(bench, plan, suites, a.heap_min_floor, out=res, at=at)
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)   # the sending is over: report what ran, unstopped
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        run(bench, plan, suites, a.heap_min_floor, out=res, at=at)   # ignores SIGTERM and SIGINT once the last case is sent
     except Stopped as e:
         n_done = len(res)
         dropped = bench.clear(timeout=CLEAR_ON_STOP_S)

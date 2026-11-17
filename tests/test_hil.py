@@ -360,6 +360,28 @@ class Exits(unittest.TestCase):
         self.assertRegex(d["summary"], r"^stopped by SIGTERM after \d+ of \d+ cases$")
         self.assertIs(signal.getsignal(signal.SIGTERM), before)
 
+    def test_sigterm_after_the_last_case_is_not_a_stop(self):
+        """A SIGTERM once every case is sent (here during the after check) leaves the run whole, not "stopped after N of N"."""
+        board = self.fake(FakeBoard())
+        call = board.call
+        diags = []
+
+        def call_then_term(cmd, timeout=0):
+            if cmd == hil.AFTER["line"]:
+                diags.append(cmd)
+                if len(diags) == 2:   # the after snapshot: every case is sent
+                    os.kill(os.getpid(), signal.SIGTERM)
+            return call(cmd, timeout)
+        board.call = call_then_term
+        before = signal.getsignal(signal.SIGTERM)
+        self.assertEqual(self.main(), 0)
+        d = self.doc()
+        self.assertEqual((d["exit"], d["stopped"]), (0, False))
+        self.assertEqual(d["results"][-1]["name"], "no_restart_heap_held")
+        self.assertTrue(d["results"][-1]["pass"])
+        self.assertNotIn("stopped", d["summary"])
+        self.assertIs(signal.getsignal(signal.SIGTERM), before)
+
     def test_json_dir_is_made(self):
         self.out = self.d / "new" / "deeper" / "out.json"
         self.fake(FakeBoard())
