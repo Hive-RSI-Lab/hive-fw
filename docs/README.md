@@ -161,6 +161,13 @@ code is unchanged, and the board's `build/` never sees the shim.
 | `"scenarios"` | `vTaskDelay`, which first hogs or gives back heap to match `fw_heap_leave` | a heap squeeze on demand ([heap.c](../qemu/heap.c)) |
 | `"wifi": "off"` | `esp_wifi_start`, `_stop`, `_connect`, `_disconnect`, `_scan_start`, `_scan_stop`, which all succeed | no radio: PHY calibration panics with `LoadStorePIFAddrError` in `register_chipv7_phy` ([nowifi.c](../qemu/nowifi.c)) |
 
+The shims are compiled with `-g`, so gdb knows their variables' types for
+a scenario's `set` steps. They are linked in at build time, with the values
+from `"adc1"` and `"gpio"` baked in as their starting values: after you
+change one of those keys, add or remove `"scenarios"`, or edit a
+`qemu/*.c` file, run `fw build --qemu` again. `fw qemu` boots the image
+already in `build-qemu/` and doesn't rebuild it.
+
 Two more keys shape the flash image `fw qemu` boots, with no rebuild:
 
 - `"nvs": {"settings": {"config": {"eth_config": "model=LAN8720,mdc=23,mdio=18"}}}`
