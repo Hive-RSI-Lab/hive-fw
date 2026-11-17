@@ -1,0 +1,6 @@
+## IDF 4.4 has libsodium built in; from IDF 5 it comes from the registry.
+dependencies:
+  espressif/libsodium:
+    version: "^1.0.20"
+    rules:
+      - if: "idf_version >=5.0"

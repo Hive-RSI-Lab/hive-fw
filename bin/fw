@@ -10,6 +10,8 @@
 #   fw new component NAME [PROJECT] [--from T] [--into DIR]   a component from a
 #                             template that worked on a board, with its host test
 #                             (fw new list: the templates; fw new check: build them all)
+#   fw new app NAME [DIR] [--from T]   a whole app project from a template
+#                             (remote-ready: tested, updated, rolled back over Wi-Fi)
 #   fw fuzz [PROJECT] [--secs N] [--new NAME]   libFuzzer harnesses on the host (clang)
 #   fw coverage [PROJECT] [--src P] [--lines] [--min PCT]   what the host tests run (gcov)
 #   fw qemu [PROJECT]         boot the build in Espressif's QEMU, judge the UART log

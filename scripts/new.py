@@ -1,6 +1,7 @@
-"""fw new: start a firmware part from a template, with its host test.
+"""fw new: start a firmware part, or a whole app, from a template, with its host test.
 
     fw new component NAME [PROJECT] [--from TEMPLATE] [--into DIR] [--force]
+    fw new app NAME [DIR] [--from TEMPLATE] [--force]
     fw new list
     fw new check [TEMPLATE ...] [--keep]
 
@@ -37,9 +38,21 @@ sdkconfig: set the lines in menuconfig too (deleting sdkconfig would drop
 every menuconfig change that isn't in the defaults). sdkconfig.defaults.<target>
 files are not read.
 
-`fw new check` proves the templates still build: each one goes into a copy
-of examples/hello once per IDF it lists (hello's own IDF when it lists
-none), then through `fw build` and its host test. The host test alone
+An app template is a whole project to start a board's firmware from:
+templates/app/<T>/ with a project/ tree, a TEMPLATE.md (first line the
+summary) and a template.json listing its IDFs. `fw new app NAME [DIR]`
+copies project/ into DIR (default ./NAME), with @NAME@ (the C name) and
+@UNAME@ filled in names and contents; then `fw build DIR` and
+`fw host-test DIR`. TEMPLATE defaults to remote-ready: an app the Hive's
+bench can test, update and roll back over Wi-Fi. DIR must be new or empty
+unless --force (which writes over the template's own files and leaves the
+rest).
+
+`fw new check` proves the templates still build: each component template
+goes into a copy of examples/hello once per IDF it lists (hello's own IDF
+when it lists none), then through `fw build` and its host test; each app
+template is copied out once per IDF it lists, its fw.json pinned to that
+IDF, then through `fw build` and `fw host-test`. The host test alone
 misses the IDF side: a callback whose shape changed between IDF versions,
 a header that moved. Needs those IDFs (fw setup); slow.
 """
@@ -59,19 +72,30 @@ import fwlib  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = ROOT / "templates" / "component"
+APP_TEMPLATES = ROOT / "templates" / "app"
+DEFAULT_APP = "remote-ready"
 HELLO = ROOT / "examples" / "hello"
 _NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 
 
-def templates() -> dict[str, str]:
-    """template name -> its one-line summary"""
+def _summaries(root: Path, part: str) -> dict[str, str]:
     out = {}
-    for d in sorted(TEMPLATES.iterdir()) if TEMPLATES.is_dir() else []:
-        if (d / "component").is_dir():
+    for d in sorted(root.iterdir()) if root.is_dir() else []:
+        if (d / part).is_dir():
             md = d / "TEMPLATE.md"
             first = md.read_text(encoding="utf-8").strip().splitlines()[0] if md.is_file() else ""
             out[d.name] = first.lstrip("# ").strip()
     return out
+
+
+def templates() -> dict[str, str]:
+    """component template name -> its one-line summary"""
+    return _summaries(TEMPLATES, "component")
+
+
+def app_templates() -> dict[str, str]:
+    """app template name -> its one-line summary"""
+    return _summaries(APP_TEMPLATES, "project")
 
 
 def fill(text: str, subs: dict[str, str]) -> str:
@@ -129,8 +153,33 @@ def create(template: str, name: str, project: Path, into: Path | None = None, fo
     return [d for _, d in files]
 
 
-def template_json(template: str) -> dict:
-    f = TEMPLATES / template / "template.json"
+def create_app(template: str, name: str, dest: Path, force: bool = False) -> list[Path]:
+    """Copy the app template's project/ to dest, names filled in; the files written.
+    Raises ValueError on a bad name or template, or a dest with files in it (without force)."""
+    if not _NAME.fullmatch(name) or name.endswith(("-", "_")):
+        raise ValueError(f"name {name!r}: lower-case letters, digits, _ or -, starting with a letter")
+    have = app_templates()
+    if template not in have:
+        raise ValueError(f"no app template {template!r} (fw new list: {', '.join(have) or 'none'})")
+    dest = (dest if dest.is_absolute() else Path.cwd() / dest).resolve()
+    if dest.exists() and not dest.is_dir():
+        raise ValueError(f"{dest} is a file")
+    if dest.is_dir() and any(dest.iterdir()) and not force:
+        raise ValueError(f"{dest} has files in it already (--force to write the template's over them)")
+    cname = name.replace("-", "_")
+    subs = {"@NAME@": cname, "@UNAME@": cname.upper()}
+    base = APP_TEMPLATES / template / "project"
+    out = []
+    for f in sorted(p for p in base.rglob("*") if p.is_file()):
+        d = dest / fill(str(f.relative_to(base)), subs)
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.write_text(fill(f.read_text(encoding="utf-8"), subs), encoding="utf-8")
+        out.append(d)
+    return out
+
+
+def template_json(template: str, root: Path = TEMPLATES) -> dict:
+    f = root / template / "template.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
 
 
@@ -227,27 +276,48 @@ def check_project(template: str, idf: str, dest: Path) -> Path:
     return dest
 
 
+def app_idfs(template: str) -> list[str]:
+    """the IDF versions an app template says it builds on; its own fw.json's when it says none"""
+    listed = template_json(template, APP_TEMPLATES).get("idf", [])
+    return listed or [fwlib.read_pins(APP_TEMPLATES / template / "project").get("idf", "")]
+
+
+def check_app(template: str, idf: str, dest: Path) -> Path:
+    """the app template copied to dest as an app named after it, fw.json pinned to idf"""
+    create_app(template, template.replace("_", "-"), dest)
+    pins = json.loads((dest / "fw.json").read_text(encoding="utf-8"))
+    pins["idf"] = idf
+    (dest / "fw.json").write_text(json.dumps(pins, indent=1) + "\n", encoding="utf-8")
+    return dest
+
+
 def check(names: list[str], keep: bool = False) -> int:
-    have = templates()
-    bad = [n for n in names if n not in have]
+    have, apps = templates(), app_templates()
+    bad = [n for n in names if n not in have and n not in apps]
     if bad:
         print(f"fw new check: no template {', '.join(bad)} (fw new list)", file=sys.stderr)
         return 2
     fw = str(ROOT / "bin" / "fw")
     work = Path(tempfile.mkdtemp(prefix="fw-new-check-"))
     failed = 0
-    for t in names or list(have):
-        for idf in idfs(t):
+    runs = [(t, idf, "component") for t in (names or list(have)) if t in have for idf in idfs(t)]
+    runs += [(t, idf, "app") for t in (names or list(apps)) if t in apps and t not in have for idf in app_idfs(t)]
+    for t, idf, kind in runs:
+        if kind == "component":
             d = check_project(t, idf, work / f"{t}-{idf}")
-            for stage in (["build", str(d)], ["host-test", str(d), "-k", "test_" + t.replace("-", "_")]):
-                r = subprocess.run([fw, *stage], capture_output=True, text=True)
-                ok = r.returncode == 0
-                print(f"{t:16} {idf:8} {stage[0]:10} {'ok' if ok else 'FAILED'}")
-                if not ok:
-                    failed += 1
-                    errs = [ln for ln in (r.stdout + r.stderr).splitlines() if "error" in ln.lower()]
-                    print("    " + "\n    ".join((errs or (r.stdout + r.stderr).splitlines())[-12:]))
-                    break
+            stages = (["build", str(d)], ["host-test", str(d), "-k", "test_" + t.replace("-", "_")])
+        else:
+            d = check_app(t, idf, work / f"app-{t}-{idf}")
+            stages = (["build", str(d)], ["host-test", str(d)])
+        for stage in stages:
+            r = subprocess.run([fw, *stage], capture_output=True, text=True)
+            ok = r.returncode == 0
+            print(f"{t:16} {idf:8} {stage[0]:10} {'ok' if ok else 'FAILED'}")
+            if not ok:
+                failed += 1
+                errs = [ln for ln in (r.stdout + r.stderr).splitlines() if "error" in ln.lower()]
+                print("    " + "\n    ".join((errs or (r.stdout + r.stderr).splitlines())[-12:]))
+                break
     if keep or failed:
         print(f"work dirs: {work}")
     else:
@@ -257,23 +327,30 @@ def check(names: list[str], keep: bool = False) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="fw new", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("kind", choices=["component", "list", "check"])
+    ap.add_argument("kind", choices=["component", "app", "list", "check"])
     ap.add_argument("name", nargs="?")
     ap.add_argument("project", nargs="*", default=[])
     ap.add_argument("--from", dest="template")
     ap.add_argument("--into", type=Path, help="the component's directory (default PROJECT/components/NAME)")
-    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--force", action="store_true", help="write over files already there")
     ap.add_argument("--keep", action="store_true", help="check: keep the work dirs")
     a = ap.parse_args(argv)
     if a.kind == "check":
         return check(([a.name] if a.name else []) + a.project, a.keep)
     if len(a.project) > 1:
-        ap.error("one PROJECT")
+        ap.error("one PROJECT" if a.kind != "app" else "one DIR")
+    if a.kind == "app":
+        return new_app(ap, a)
     a.project = Path(a.project[0]) if a.project else Path.cwd()
     have = templates()
     if a.kind == "list":
         for t, summary in have.items():
             print(f"{t:16} {summary}")
+        apps = app_templates()
+        if apps:
+            print("\napps (fw new app NAME [DIR] --from T):")
+            for t, summary in apps.items():
+                print(f"{t:16} {summary}")
         return 0
     if not a.name:
         ap.error("fw new component NAME")
@@ -299,6 +376,27 @@ def main(argv: list[str] | None = None) -> int:
     if md.is_file():
         print(f"  (read {md} for what it does and what it was measured at)")
     print(f"next: fw host-test {project} -k test_{a.name.replace('-', '_')}")
+    return 0
+
+
+def new_app(ap: argparse.ArgumentParser, a: argparse.Namespace) -> int:
+    if not a.name:
+        ap.error("fw new app NAME [DIR]")
+    if a.into:
+        ap.error("--into is for a component; an app goes in DIR")
+    template = a.template or DEFAULT_APP
+    dest = Path(a.project[0]) if a.project else Path(a.name)
+    try:
+        files = create_app(template, a.name, dest, a.force)
+    except ValueError as e:
+        print(f"fw new: {e}", file=sys.stderr)
+        return 2
+    dest = (dest if dest.is_absolute() else Path.cwd() / dest).resolve()
+    print(f"fw new: app {a.name} from template {template}, in {dest} ({len(files)} files)")
+    md = APP_TEMPLATES / template / "TEMPLATE.md"
+    if md.is_file():
+        print(f"  (read {md} for what it does and how to set a board up for it)")
+    print(f"next: fw build {dest} && fw host-test {dest}")
     return 0
 
 

@@ -86,7 +86,8 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
 | `eval "$(fw env [P])"` | Puts `IDF_PATH`, `PATH` and `FW_QEMU` in your shell, for scripts of your own. |
 | `fw host-test [P]` | The project's unit tests on the host. Runs the `host_tests` dir's executable `run`, its `CMakeLists.txt` (cmake and ctest), its `Makefile` (`make test` if it has that target, else its default; `FW_UNITY=...` passed), or else each `test_*.c` as one program, built with gcc, ASan and UBSan against the vendored Unity. A test file names its sources in header lines: `// fw-src: main/volume.c`, `// fw-inc: main`, `// fw-cflags: -DX`. Don't set `"host_tests": "."` in an IDF project: the project's own `CMakeLists.txt` is IDF's, so the runner takes it and fails; use a subdirectory such as `test/host`. Keep host builds in their own dir (`build-host/`), not `build/`: `idf.py` refuses a `build/` that has no CMake cache of its own. |
 | `fw new component NAME [P] [--from T] [--into DIR] [--force]` | Starts a part from a template that has worked on a board: copies `templates/component/<T>/component/` into `P/components/NAME` (or `--into`, inside the project) and its host test into the `host_tests` dir, wired by `fw-src` lines, so `fw host-test P -k test_NAME` passes at once; a template with a `fuzz/` part adds its harness and seeds to the fuzz dir (`fuzz_tests`) for `fw fuzz`. `T` defaults to NAME when a template has that name, else `plain`. `@NAME@` (the C name, `-` becomes `_`), `@UNAME@`, `@COMPONENT@` and `@DIR@` are filled in file names and contents. It writes nothing over an existing file without `--force`. Each template's `TEMPLATE.md` says what it does and what it measured on the board it came from. `fw new list` lists them. |
-| `fw new check [T ...] [--keep]` | Proves the templates still build: each goes into a copy of `examples/hello` once per IDF its `template.json` lists (`{"idf": ["v4.4.8", "v5.5.6"]}`), then through `fw build` and its host test. A host test can't see the IDF side (a callback whose shape changed between IDF versions, a header that moved), so run this after editing a template. Slow; needs those IDFs. |
+| `fw new app NAME [DIR] [--from T] [--force]` | Starts a whole app from a template: copies `templates/app/<T>/project/` into `DIR` (default `./NAME`) with `@NAME@` (the C name) and `@UNAME@` filled in, so `fw build DIR` and `fw host-test DIR` work at once. `T` defaults to `remote-ready`. `DIR` must be new or empty unless `--force`, which writes the template's files over what is there and leaves the rest. `fw new list` lists the app templates after the components. |
+| `fw new check [T ...] [--keep]` | Proves the templates still build: each component template goes into a copy of `examples/hello` once per IDF its `template.json` lists (`{"idf": ["v4.4.8", "v5.5.6"]}`), then through `fw build` and its host test; each app template is copied out once per IDF it lists, its `fw.json` pinned to that IDF, then through `fw build` and `fw host-test`. A host test can't see the IDF side (a callback whose shape changed between IDF versions, a header that moved), so run this after editing a template. Slow; needs those IDFs. |
 | `fw coverage [P] [--src PATH] [--lines] [--json] [--min PCT]` | Line, branch and function coverage of what the host tests run (gcc `--coverage`, gcov's JSON), merged across test programs so a file two tests share counts once. It builds each `test_*.c` itself, or runs a test Makefile's `coverage` target (which must leave its `.gcda` files under the test dir), or reads `--gcda DIR`. `--src` limits the report to paths under the project; `--lines` lists the lines no test ran; `--min` fails under that line percentage. |
 | `fw fuzz [P] [--secs N] [--jobs N] [--only NAME] [--new NAME] [--replay NAME FILE]` | libFuzzer harnesses for the portable code, on the host: each `fuzz_*.c` in the fuzz dir (fw.json `fuzz_tests`, default `test/fuzz`) names its sources in the same `// fw-src:` lines as a host test and is built with clang, libFuzzer, ASan and UBSan. It runs each for `--secs` (all at once with `--jobs`), growing a corpus in `build-fuzz/corpus/NAME` from the checked-in `seeds/NAME/`, with a dictionary of the sources' string literals plus `NAME.dict`. A crash prints the sanitizer report, keeps its input as `build-fuzz/crash-NAME-*` and a `--replay` line; check the input in as `seeds/NAME/regress-*` once fixed. `--new NAME` writes a harness from the template. No clang that links libFuzzer (`$CLANG`, `~/.local/opt/LLVM-*/bin/clang`, `PATH`): exits 3. |
 | `fw qemu [P] [--http 'GET /path' ...] [--hold S] [--scenario NAME\|all\|list]` | Lays `build/flasher_args.json`'s binaries into one flash image (`build/fw-flash.bin`) and boots it in QEMU's `esp32` or `esp32s3` machine with `-no-reboot` (so a reset ends the run). It watches the UART: it passes once the expect pattern shows and nothing fatal follows for `settle` seconds. It fails on a panic, `abort()`, an assert, a watchdog, a brownout, `ESP_ERROR_CHECK`, a reboot, or no app in flash. With HTTP requests (below) it also makes them over QEMU's Ethernet and judges the replies. The log goes to `build/fw-qemu.log`. |
@@ -347,6 +348,22 @@ A new template is a `component/` tree and a `host_test/` tree with
 summary, and a `template.json` listing the IDFs it builds on. Keep the
 board-free logic in plain C that the host test covers, the IDF calls in a
 thin `_esp.c` beside it, and run `fw new check` before you commit.
+
+`templates/app/` holds whole apps to start a board's firmware from
+(`fw new app`):
+
+- `remote-ready`: an ESP32 app the Hive's bench can test, update and roll
+  back over Wi-Fi. Wi-Fi from NVS, the test API on the console (`api <op>`,
+  answered `API {json}`), a self-test, the signed WebSocket link to the
+  bench, updates over it and a trial boot that rolls a bad image back. The
+  Hive's public key comes from `HIFI_HIVE_PUBKEY` at build time. It ships
+  a `bench.json` for `fw publish`, and its kit (`components/rr`) is
+  host-tested. From the hi-fi Lite's remote work (projects/fw-bench).
+
+An app template is a `project/` tree (a whole IDF project with `fw.json`
+and its host tests), a `TEMPLATE.md` whose first line is its summary and a
+`template.json` listing its IDFs. It holds no key or secret: anything
+key-shaped comes from the environment at build time.
 
 ## Test and score
 

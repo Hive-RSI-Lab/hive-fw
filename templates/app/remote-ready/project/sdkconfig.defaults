@@ -1,0 +1,11 @@
+# 8 MB flash: a recovery image and two app slots (partitions.csv)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# a new image boots on trial and rolls back unless it proves itself
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# the bench endpoint's TLS is checked against the certificate bundle
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# the remote worker and the console parse JSON
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
