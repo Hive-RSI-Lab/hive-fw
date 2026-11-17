@@ -15,7 +15,11 @@ class FakeBoard:
         self.vol, self.mute, self.up = 35, False, 100
         self.reboot, self.heap_min, self.freeze, self.lease = reboot, heap_min, freeze, lease
         self.no_diag, self.dies_after = no_diag, dies_after
-        self.sent, self.diags = [], 0
+        self.sent, self.diags, self.cleared = [], 0, 0
+
+    def clear(self):
+        self.cleared += 1
+        return "dropped 1"
 
     def call(self, cmd, timeout=0):
         self.sent.append(cmd)
@@ -165,6 +169,13 @@ class Benches(unittest.TestCase):
         b._size = lambda: 0
         self.assertEqual(b.call("api state", timeout=1)["status"], hil.STOP)
 
+    def test_lost_answer_stops_at_once(self):
+        b, log = self.bench("")
+        b.me = "a4b54"
+        log.write_text("2026-11-17 05:00:00 > api state   (a4b54)\n2026-11-17 05:00:20 --- no answer to state: timed out\n")
+        b._size = lambda: 0
+        self.assertIn("timed out", b.call("api state", timeout=5)["error"])
+
     def test_answer_is_read_from_the_log(self):
         b, log = self.bench("")
         b.me = "a4b54"
@@ -227,6 +238,22 @@ class Runs(unittest.TestCase):
         self.assertTrue(all(r["pass"] is False for r in res[3:]))
         self.assertIn("not sent: the run stopped at read/unknown", res[4]["why"])
         self.assertIn("not checked", res[-1]["why"])
+        self.assertEqual(b.cleared, 1)
+
+    def test_failed_save_holds_back_the_rest_of_its_suite(self):
+        plan = {"suites": {"c": [{"name": "save", "op": "state", "expect": {"has": ["audio.gain"]}, "save": {"vol": "audio.volume"}},
+                                 {"name": "mute", "op": "volume", "body": {"mute": True}},
+                                 {"name": "restore", "op": "volume", "body": {"volume": "$vol", "mute": False}}],
+                           "d": [{"name": "state", "op": "state"}]}}
+        b = FakeBoard()
+        res = hil.run(b, plan)
+        self.assertEqual([r["name"] for r in res if r["pass"] is False], ["save", "mute", "restore"])
+        self.assertIn("didn't save vol", res[2]["why"])
+        self.assertFalse(b.mute)
+        self.assertEqual(b.sent, ["api diag", "api state", "api state", "api diag"])
+
+    def test_a_longer_name_is_not_filled_by_a_shorter(self):
+        self.assertEqual(hil.subst('{"v":$volx}', {"vol": 1}), '{"v":$volx}')
 
     def test_restart_is_seen_against_wall_time(self):
         before = {"uptime": 100}

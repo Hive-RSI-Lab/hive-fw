@@ -36,8 +36,11 @@ down. A board you don't hold refuses write lines, so take its lease first
 The run stops sending when a line gets no answer, when the bench itself
 fails, or when the board is offline or its agent switch is off: a queued
 line would go later and its answer could be read as a later case's. The
-cases left FAIL as not sent. A case whose line still holds a "$var" that
-no earlier case saved FAILs without being sent. The run starts with the
+cases left FAIL as not sent, and the run asks the bench to drop any of
+your lines it still holds (`serialtab clear --dev D`). A case whose line
+still holds a "$var" that no earlier case saved FAILs without being sent,
+and when a case with "save" fails, the rest of its suite is not sent: the
+writes after it could not be put back. The run starts with the
 diag line; with no diag it sends nothing.
 
 Exit 0 when every case that ran passed, 1 when one failed, 2 on a bad plan,
@@ -64,7 +67,7 @@ STOP = -3                   # status of an answer after which nothing more is se
 QUEUED = ("is offline", "agent switch is off")   # serialtab send's notes for a line it only queued
 SEND_S = 30
 RESTART_SLACK_S = 30
-UNFILLED = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+UNFILLED = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\b")
 
 
 def line(op, body=None):
@@ -94,9 +97,7 @@ def subst(v, saved):
     if isinstance(v, str):
         if v.startswith("$") and v[1:] in saved:
             return saved[v[1:]]
-        for k, x in sorted(saved.items(), key=lambda kv: -len(kv[0])):
-            v = v.replace("$" + k, json.dumps(x))
-        return v
+        return UNFILLED.sub(lambda m: json.dumps(saved[m.group(0)[1:]]) if m.group(0)[1:] in saved else m.group(0), v)
     if isinstance(v, dict):
         return {k: subst(x, saved) for k, x in v.items()}
     if isinstance(v, list):
@@ -216,6 +217,8 @@ class Bench:
                     return {"error": "the bench dropped it: " + ln[20:220], "status": STOP}
                 if ln[20:].startswith(mark) and ln.rstrip().endswith(f"({self.me})"):
                     for nxt in lines[i + 1:]:
+                        if nxt[20:].startswith("--- no answer to "):
+                            return {"error": nxt[24:220], "status": STOP}
                         if nxt[20:].startswith("API "):
                             try:
                                 return json.loads(nxt[24:])
@@ -225,6 +228,14 @@ class Bench:
                             break
             time.sleep(0.5)
         return None
+
+    def clear(self):
+        """Drop this agent's lines the bench still holds for the board."""
+        try:
+            r = subprocess.run([self.serialtab, "clear", "--dev", self.dev], capture_output=True, text=True, timeout=SEND_S)
+            return (r.stdout or r.stderr).strip()[-200:]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"couldn't clear: {e}"
 
 
 def snapshot(bench, after):
@@ -270,21 +281,22 @@ def run(bench, plan, suites=None, heap_min_floor=None):
         after["heap_min_floor"] = heap_min_floor
     skip_refused = plan.get("skip_refused", SKIP_REFUSED)
     saved, out, stopped = {}, [], ""
-    t_before = time.time()
     before = snapshot(bench, after)
+    t_before = time.time()
     if not _num(before.get("uptime")):
         return [{"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
                  "why": f"no diag before the run ({after['line']}), so nothing was sent"}]
     for suite, cases in plan["suites"].items():
         if suites and suite not in suites:
             continue
+        unsaved = ""
         for c in cases:
             body = subst(copy.deepcopy(c.get("body")), saved)
             cmd = subst(c["line"], saved) if "line" in c else line(c["op"], body)
             r = {"suite": suite, "name": c["name"], "line": cmd[:160], "pass": False, "secs": 0, "answer": None}
             left = UNFILLED.findall(cmd)
-            if stopped or left:
-                r["why"] = f"not sent: {stopped}" if stopped else \
+            if stopped or unsaved or left:
+                r["why"] = f"not sent: {stopped or unsaved}" if stopped or unsaved else \
                     f"not sent: {', '.join(left)} was never saved (run the case that saves it first)"
                 out.append(r)
                 continue
@@ -296,6 +308,8 @@ def run(bench, plan, suites=None, heap_min_floor=None):
             why = judge(c.get("expect", "ok"), a, saved, skip_refused)
             if why and not why.startswith(SKIP) and c.get("why"):
                 why = f"{c['why']}: {why}"
+            if why and c.get("save"):
+                unsaved = f"{suite}/{c['name']} didn't save {', '.join(c['save'])}, so nothing after it could be put back"
             if not why:
                 for var, path in c.get("save", {}).items():
                     v = get(a, path)
@@ -306,11 +320,13 @@ def run(bench, plan, suites=None, heap_min_floor=None):
                 r["pass"], r["skip"] = None, True
             out.append(r)
     if stopped:
-        out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
-                    "why": f"not checked: {stopped}"})
+        dropped = bench.clear() if hasattr(bench, "clear") else ""
+        out.append({"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before, "clear": dropped},
+                    "why": f"not checked: {stopped}" + (f" (bench: {dropped})" if dropped else "")})
         return out
+    t_end = time.time()
     now = snapshot(bench, after)
-    why = after_check(before, now, after, time.time() - t_before)
+    why = after_check(before, now, after, t_end - t_before)
     out.append({"suite": "after", "name": "no_restart_heap_held", "pass": not why, "why": why,
                 "answer": {"before": before, "after": now, "heap_min_floor": after["heap_min_floor"]}})
     return out
@@ -318,7 +334,7 @@ def run(bench, plan, suites=None, heap_min_floor=None):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="fw hil", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dev", help="the remote board's id: 12 hex digits, its MAC (colons are dropped)")
+    p.add_argument("--dev", help="the remote board's id: 12 hex digits, its MAC (colons or dashes are dropped)")
     p.add_argument("--plan", required=True, help="the plan JSON")
     p.add_argument("--suite", help="run only these suites, comma-separated (the plan's order holds)")
     p.add_argument("--lane", help="your lab lane, for the board's lease (serialtab's default otherwise)")
@@ -342,7 +358,7 @@ def main(argv=None):
         return 0
     if not a.dev:
         p.error("--dev is needed to run (or --list)")
-    dev = a.dev.lower().replace(":", "")
+    dev = a.dev.lower().replace(":", "").replace("-", "")
     if not re.fullmatch(r"[0-9a-f]{12}", dev):
         print(f"fw hil: --dev {a.dev!r} is not a board id (12 hex digits, as `serialtab remote` lists)", file=sys.stderr)
         return 2
