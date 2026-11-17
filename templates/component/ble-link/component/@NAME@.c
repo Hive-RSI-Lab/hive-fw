@@ -291,8 +291,17 @@ void @NAME@_tx_pong(@NAME@_tx_t *t, const @NAME@_frame_t *f, int64_t t4) {
 		t->dup++;
 		return;
 	}
+	/* the times come off the radio: each clock counts up from its boot, so a
+	 * time outside [0, 2^62) or running backwards is refused before any
+	 * arithmetic, which then can't overflow (the sums below stay in range) */
+	const int64_t lim = (int64_t) 1 << 62;
+	if (f->t1 < 0 || f->t2 < 0 || f->t3 < 0 || t4 < 0 || f->t1 >= lim || f->t2 >= lim || f->t3 >= lim ||
+	    t4 >= lim || f->t1 > t4 || f->t2 > f->t3) {
+		t->bad++;
+		return;
+	}
 	int64_t delay = (t4 - f->t1) - (f->t3 - f->t2);
-	if (delay < 0 || f->t1 > t4) {
+	if (delay < 0) {
 		t->bad++;
 		return;
 	}

@@ -193,6 +193,17 @@ static void test_sender(void) {
 	@NAME@_frame_t slow = {@UNAME@_PONG, 9, 501, a, a, a, 64};
 	@NAME@_tx_pong(t, &slow, a + 5000000);
 	TEST_ASSERT_EQUAL(1, t->rtt_bins[@UNAME@_RTT_BINS - 1]);
+	/* hostile times off the radio: no overflow, counted as bad */
+	uint32_t bad0 = t->bad, pongs0 = t->pongs;
+	@NAME@_frame_t h1 = {@UNAME@_PONG, 9, 502, INT64_MIN, 0, 0, 64};
+	@NAME@_tx_pong(t, &h1, a);
+	@NAME@_frame_t h2 = {@UNAME@_PONG, 9, 503, a, INT64_MIN, INT64_MAX, 64};
+	@NAME@_tx_pong(t, &h2, a + 10);
+	@NAME@_frame_t h3 = {@UNAME@_PONG, 9, 504, a, INT64_MAX, INT64_MIN, 64};
+	@NAME@_tx_pong(t, &h3, a + 10);
+	@NAME@_frame_t h4 = {@UNAME@_PONG, 9, 505, a, INT64_MAX - 5, INT64_MAX, 64};
+	@NAME@_tx_pong(t, &h4, a + 10);
+	TEST_ASSERT_TRUE(t->bad == bad0 + 4 && t->pongs == pongs0);
 	free(t);
 }
 
