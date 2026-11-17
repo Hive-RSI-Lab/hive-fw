@@ -61,14 +61,15 @@ Rules the lab found:
   about 3.3 KB more, Bluedroid's own link state and GATT client cache.
 - BLE beside a live A2DP stream needs room for both links: an A2DP link
   holds about 6.3 KB of internal RAM on each board (source and sink alike)
-  and a BLE link about 3.3 KB, so about 9.5 KB free beyond what the image
-  needs to boot and run. A dual-mode Lite lab image with an A2DP source
-  added booted at about 12 KB free, and the stream alone took both boards
-  under 5 KB in 2.5–3.5 s, before any BLE. So whether BLE causes audio
-  dropouts is not measured yet; get the RAM first (statics to PSRAM, fewer
-  stacks in internal RAM). Read the free internal heap with the stream up
-  before starting a link. ESP-NOW receive, by contrast, stopped A2DP
-  connecting at all (`espnow-link`'s rules).
+  with dips about 1.5 KB lower, and a BLE link about 3.3 KB. So budget at
+  least about 11 KB above your own run floor, beyond what the image needs
+  to boot. A dual-mode Lite lab image with an A2DP source added booted
+  with about 12 KB of internal RAM free, and the stream alone took both
+  boards under 5 KB in 2.5–3.5 s, before any BLE. So whether BLE causes
+  audio dropouts, or blocks an A2DP connect, is not measured yet; get the
+  RAM first (statics to PSRAM, fewer stacks in internal RAM). Read the
+  free internal heap with the stream up before starting a link. ESP-NOW
+  receive did block A2DP connects (`espnow-link`'s rules).
 - Bluedroid's GATT server and client add about 190 KB of flash and 13 KB of
   IRAM: the full Lite image no longer fitted its app slot. Budget for it,
   or try NimBLE (not tried here).
