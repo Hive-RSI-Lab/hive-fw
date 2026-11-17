@@ -13,7 +13,8 @@
  * response one way and notified the other. No pairing, no bonding, no
  * link encryption: each frame carries @NAME@.h's tag under the run's key
  * instead, so a stranger's forged or seq-jumped frames count as bad and
- * move nothing but bad (a replay within a run is a dup: see @NAME@.h). Pairing would not do: Just Works (the only mode two
+ * move nothing but bad (a replay within a run is a dup: see @NAME@.h).
+ * Pairing would not do: Just Works (the only mode two
  * headless boards have) is open to a man in the middle, and a bond is per
  * pair of boards where the key is per run. The frames aren't secret:
  * anything that must be needs LE Secure Connections or encryption at the
