@@ -284,6 +284,7 @@ def run(bench, plan, suites=None, heap_min_floor=None):
     before = snapshot(bench, after)
     t_before = time.time()
     if not _num(before.get("uptime")):
+        bench.clear() if hasattr(bench, "clear") else None
         return [{"suite": "after", "name": "no_restart_heap_held", "pass": False, "answer": {"before": before},
                  "why": f"no diag before the run ({after['line']}), so nothing was sent"}]
     for suite, cases in plan["suites"].items():
@@ -305,7 +306,12 @@ def run(bench, plan, suites=None, heap_min_floor=None):
             secs = round(time.time() - t0, 1)
             if a is None or (isinstance(a, dict) and a.get("status") == STOP):
                 stopped = f"the run stopped at {suite}/{c['name']}"
+                if c.get("body") is not None and any(k.get("save") for k in cases):
+                    stopped += " after a write, so the board may be left changed (put it back by hand)"
             why = judge(c.get("expect", "ok"), a, saved, skip_refused)
+            if not why:
+                gaps = [p for p in c.get("save", {}).values() if get(a, p) is _MISSING]
+                why = f"missing {gaps} to save" if gaps else ""
             if why and not why.startswith(SKIP) and c.get("why"):
                 why = f"{c['why']}: {why}"
             if why and c.get("save"):

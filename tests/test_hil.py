@@ -223,6 +223,7 @@ class Runs(unittest.TestCase):
         self.assertEqual(b.sent, ["api diag"])
         self.assertEqual(len(res), 1)
         self.assertIn("no diag before the run", res[0]["why"])
+        self.assertEqual(b.cleared, 1)
 
     def test_unsaved_var_is_not_sent(self):
         b = FakeBoard()
@@ -251,6 +252,14 @@ class Runs(unittest.TestCase):
         self.assertIn("didn't save vol", res[2]["why"])
         self.assertFalse(b.mute)
         self.assertEqual(b.sent, ["api diag", "api state", "api state", "api diag"])
+
+    def test_a_save_path_missing_fails_the_save(self):
+        plan = {"suites": {"c": [{"name": "save", "op": "state", "save": {"g": "audio.gain"}},
+                                 {"name": "mute", "op": "volume", "body": {"mute": True}}]}}
+        b = FakeBoard()
+        res = hil.run(b, plan)
+        self.assertIn("missing ['audio.gain'] to save", res[0]["why"])
+        self.assertFalse(b.mute)
 
     def test_a_longer_name_is_not_filled_by_a_shorter(self):
         self.assertEqual(hil.subst('{"v":$volx}', {"vol": 1}), '{"v":$volx}')
