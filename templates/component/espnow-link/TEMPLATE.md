@@ -85,12 +85,13 @@ Rules the lab found:
   retries for control, sync and data up to about 0.4 Mbit/s, or the
   receiver's Bluetooth controller off with `WIFI_PS_NONE` for 3.6–4.1
   Mbit/s and no loss. Switching costs about 0.65 s and drops a connected
-  A2DP phone, so it is a mode, not a gap between audio frames. The A2DP
-  stream's own dropouts beside the retries are not measured yet (next rule).
+  A2DP phone, so it is a mode, not a gap between audio frames. Beside a
+  running A2DP stream the retries cost little (next rule).
 - What can share the radio with a live A2DP stream (Lite to Lite, a 441 Hz
   SBC tone, IDF 4.4, both boards Wi-Fi stations with modem sleep): Wi-Fi
   as a station could, the stream was clean beside it (0 bytes dropped, no
-  dry output over three 30 s runs; gaps up to 80 ms). ESP-NOW could not:
+  dry output over seven 30 s runs; gaps up to 76-80 ms). ESP-NOW can, in
+  one order only:
   - Don't receive ESP-NOW while an A2DP link may have to connect. With this
     component's echo up on the sink board, every A2DP connect failed at the
     page stage ("connect failed, reason 0" after 7.6 s), in 5 tries over
@@ -101,21 +102,34 @@ Rules the lab found:
     not supported otherwise (beside a SoftAP, say). A sink doesn't choose
     when a phone pages in, so keep ESP-NOW receive off whenever the sink
     isn't connected, or accept that a phone can't connect while it runs.
-    An echo started but idle wasn't tested. The same failure comes from a
-    stale bond on the sink (it refuses a re-connect until it reboots), so
-    the lab rebooted the sink before each run to rule that out.
-  - Started after the stream, ESP-NOW itself needs only about 0.3 KB of
+    An echo started but idle wasn't tested. A stale bond on the sink looks
+    the same (it refuses a re-connect from the same source until it
+    reboots): a sink that pairs for a test should forget that bond
+    (`esp_bt_gap_remove_bond_device`) once the link is down.
+  - Started after the stream is up, ESP-NOW ran beside it. A flood with 8
+    retries (250 B frames, window 16, 54 Mbit/s) from the source board to
+    the sink board, 2 runs of 30 s: no audio data lost, the longest gap
+    between A2DP packets 80-81 ms against 76 ms with no load (both over
+    the whole stream, its start included), but 5 times
+    as many gaps over 50 ms (217-222 against 39-50), and one output
+    underrun of 50 ms in one of the two runs (none in the other, none in
+    the no-load runs). ESP-NOW itself sent 448-458 kbit/s, retries
+    included; about 18% of frames failed their first try and 26% of all
+    sends were NACKed; 330-340 kbit/s got through. A flood is the worst
+    case. ESP-NOW at control rates beside a stream was not measured; expect
+    it to be far lighter, as BLE's 20 Hz ping was (`ble-link`).
+    With BLE pinging as well, one run: no underrun, 142 gaps over 50 ms,
+    ESP-NOW 373 kbit/s out and 273 through (0.07% lost).
+  - It needs internal RAM first. ESP-NOW itself takes only about 0.3 KB of
     internal RAM when its buffers are in PSRAM (see the RAM rule below;
-    without PSRAM the queue and stack take about 12 KB). But an A2DP link
+    without PSRAM the queue and stack take about 12 KB), but an A2DP link
     holds about 6.3 KB on each board, with free heap dipping about 1.5 KB
-    lower: the sink went from 15.3 to 9.1 KB (low 7.6 KB), and the source
-    was at 8.9 KB, under the Hi-Fi lab's 10 KB start floor, which refused
-    the ESP-NOW start. So on the Lite neither order works yet (ESP-NOW first
-    blocks the connect, the stream first leaves no RAM), and whether the
-    retries cause audio dropouts is not measured. That image needs about
-    16 KB free before the stream. Check
-    `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` with the stream up, not
-    at boot, before starting a run beside one.
+    lower. The first Lite image had about 9 KB free with the stream up and
+    its lab refused the run (10 KB start floor); the dual-mode image, which
+    the RAM recipe below was applied to, fell under 5 KB with the stream,
+    and after the recipe had about 25 KB (about 21 KB with a BLE link up as
+    well). Check `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)`
+    with the stream up, not at boot, before starting a link beside one.
 - Never `esp_wifi_set_ps(WIFI_PS_NONE)` while the Bluetooth controller is
   enabled: the coexistence code in the Wi-Fi blob logs "Should enable WiFi
   modem sleep when both WiFi and Bluetooth are enabled" and panics a few
@@ -158,11 +172,55 @@ Rules the lab found:
   queue and semaphore control blocks stay internal: the ESP32's atomic
   compare-and-set doesn't work on PSRAM), and makes the worker once: it sleeps on a task
   notification between runs, so a static stack is never reused while a
-  deleted task still holds it. A task with a PSRAM stack must not write
-  flash (NVS); keep it to the radio. Check `heap_caps_get_free_size
+  deleted task still holds it. A task with a PSRAM stack must not touch
+  flash at all, reads included (NVS, partitions, OTA); keep it to the radio. Check `heap_caps_get_free_size
   (MALLOC_CAP_INTERNAL)` before and after start on your board; ESP-NOW
   keeps about 230 bytes of internal RAM after its first init, even after
   `esp_now_deinit`.
+- Room for a second radio beside a live A2DP stream (the RAM recipe, IDF
+  4.4, ESP32 with PSRAM). Read the budget with the stream up, when its
+  A2DP link has already taken its 6.3 KB on each board: then a BLE link
+  needs about 3.3 KB more, ESP-NOW about 0.3 KB with its buffers in PSRAM,
+  and free heap dips about 1.5 KB under its steady level, so have about
+  5 KB above your run floor (about 16 KB on the Lite, whose lab refuses a
+  start under 10 KB). The Lite's dual-mode lab image went from under 5 KB
+  to about 25 KB with the stream up (about 21 KB with a BLE link too), in
+  this order:
+  1. Have the PSRAM switches on: `CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST`,
+     `CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY`, `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`
+     (Wi-Fi's dynamic buffers), `CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY`
+     and `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` at 256 or less. The Lite
+     already had them, so they were not the win; check yours.
+  2. Look at stacks before statics. On the Lite the largest named static
+     in internal RAM was 2 KB (`idf.py size-components` and the map file),
+     and the lab's own buffers were already in PSRAM. The win was two
+     long-lived pthreads (an audio decoder's 14.5 KB stack and a network
+     reader's 4.3 KB): `pthread_create` takes its stacks from internal
+     RAM on IDF 4.4. Making each a FreeRTOS task with
+     `xTaskCreateStaticPinnedToCore`, the stack from
+     `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)` and the TCB internal,
+     gave back about 17-19 KB, with no change to the stream (0 bytes
+     dropped, gaps up to 76 ms as before). List tasks with
+     `uxTaskGetSystemState` and test each stack with `esp_ptr_internal`
+     to find yours. On IDF 5.3 and later no code change is needed: set
+     `stack_alloc_caps` to `MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT` in an
+     `esp_pthread_cfg_t` and call `esp_pthread_set_cfg` before
+     `pthread_create`. The setting belongs to the calling thread and holds
+     for every later `pthread_create` from it, so set it back after. 5.0
+     to 5.2 don't have the field. Not tried on the Lite, which is on 4.4;
+     on 5.x the stack switch is
+     `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM`.
+  3. A task with a PSRAM stack must never touch flash, reads included:
+     no NVS, partition reads, `spi_flash_mmap` or OTA (the IDF asserts the
+     stack is internal whenever the cache is turned off), and no ROM code
+     or direct Bluetooth or Wi-Fi calls. Its stack is also slower: move compute and network threads, not ones that save
+     settings. Fall back to an internal stack if the PSRAM allocation
+     fails.
+  4. Only then trim the radios: dual mode (Classic + BLE) costs about
+     12 KB, and `ble-link` lists the Wi-Fi and controller cuts that won it
+     back for a lab image (fewer static Wi-Fi buffers, one Classic ACL
+     link). Those cost Wi-Fi headroom, so they are for a lab image unless
+     a soak shows otherwise.
 - IDF 5.x moved `MACSTR` to `esp_mac.h` and `esp_random` to
   `esp_random.h`, changed the receive callback to take
   `esp_now_recv_info_t` (5.0) and the send callback to take
