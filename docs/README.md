@@ -337,6 +337,9 @@ loose from it so the next board starts from them (`fw new`):
 - `espnow-link`: a measured ESP-NOW link between two boards beside Wi-Fi
   STA (echo, ping, flood; loss, RTT, clock offset and drift), from the
   hi-fi Lite lab (projects/hifi-lite-lab, lane esp32-lab).
+- `i2c-device`: one chip on an I2C bus behind an interface (probe, register
+  read and write, a datasheet check, bus recovery), with a mock bus for host
+  tests and a fuzzer, from the hi-fi Lite lab's CH224 and ES8388.
 - `plain`: an empty component split into host-tested C and an IDF side.
 
 A new template is a `component/` tree and a `host_test/` tree with
