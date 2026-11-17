@@ -67,17 +67,19 @@ Rules the lab found:
 - With Bluetooth on, retry at the sender, up to 8 times; nothing else
   measured helps. Resend each frame whose send callback says it wasn't
   acked (same sequence number), up to 8 more times: the flood above then
-  lost 0.09–0.46% in four runs, at 0.4–0.5 Mbit/s delivered and 1.3–1.45×
-  the airtime. 4 retries still lost 1.1–1.3%. A retried frame arrives out
-  of order (one frame in 6–9), so the receiver needs a reorder buffer by
+  lost 0.09–0.44% in three runs (0.38–0.46% in two more with retries 50 ms
+  apart), at 0.4–0.5 Mbit/s delivered and 1.30–1.46× the airtime. 4 retries
+  still lost 1.3%, 6 lost 1.1%. A retried frame arrives out of order
+  (396–995 frames in a 15–30 s run), so the receiver needs a reorder buffer by
   sequence number and must drop duplicates; spacing retries 50 ms apart
   works as well and adds latency. These didn't help: bursts timed to the
-  receiver's DTIM wake (54–81% lost; the receiver's radio stays awake
-  while traffic keeps it busy, not for a fixed time after the beacon),
-  `WIFI_PS_MAX_MODEM` with any `listen_interval` (29–34%), and
+  receiver's DTIM wake (54–81% lost; likely, not tested, because the
+  radio stays awake while traffic keeps it busy, not for a fixed time
+  after the beacon), `WIFI_PS_MAX_MODEM` with `listen_interval` 1, 3 or
+  10 (29–34%), and
   `ESP_COEX_PREFER_WIFI`. So pick one per link: Bluetooth on with 8
   retries for control, sync and data up to about 0.4 Mbit/s, or the
-  receiver's Bluetooth controller off with `WIFI_PS_NONE` for 3.6–4
+  receiver's Bluetooth controller off with `WIFI_PS_NONE` for 3.6–4.1
   Mbit/s and no loss. Switching costs about 0.65 s and drops a connected
   A2DP phone, so it is a mode, not a gap between audio frames. The A2DP
   stream's own dropouts beside the retries are not measured yet.
