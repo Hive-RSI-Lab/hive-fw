@@ -6,8 +6,9 @@
  * links this file with -Wl,--wrap=gpio_get_level: a pin whose bit is set in
  * fw_gpio_mask reads its bit of fw_gpio_level, the rest read as before.
  * fw.json qemu.gpio gives the levels at boot; a fault step changes them while
- * the firmware runs ({"set": "fw_gpio_level |= 1ULL << 34"}). Built without
- * IDF headers.
+ * the firmware runs ({"set": ["fw_gpio_mask |= 1ULL << 34",
+ * "fw_gpio_level |= 1ULL << 34"]}): a pin outside fw_gpio_mask ignores
+ * fw_gpio_level. Built without IDF headers.
  */
 #ifndef FW_GPIO_MASK
 #define FW_GPIO_MASK 0

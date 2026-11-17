@@ -292,7 +292,9 @@ def parse_step(spec: dict | str) -> dict:
       send: {"send": "line", "expect": regex, "timeout": S}: the line to the
         console (UART0 input), and the regex the UART must show after it;
       log: {"log": regex, "timeout": S}: a line the UART must have shown
-        since boot, or show within the timeout."""
+        since the step before this one began (so a fault step's effect, not
+        a line from boot), or show within the timeout; "since": "boot"
+        searches the whole UART log."""
     if isinstance(spec, str) or any(m in spec for m in ("get", "post", "put", "delete")):
         retry = spec.get("retry", 0) if isinstance(spec, dict) else 0
         anystatus = isinstance(spec, dict) and spec.get("status") == "any"
@@ -318,14 +320,17 @@ def parse_step(spec: dict | str) -> dict:
             raise ValueError(f"step {spec!r}: wait is seconds")
         return {"kind": "wait", "secs": float(w)}
     if "send" in spec:
-        if not isinstance(spec["send"], str) or "\n" in spec["send"]:
-            raise ValueError(f"step {spec!r}: send takes one line")
+        if not isinstance(spec["send"], str) or any(ord(c) < 32 or c == "\x7f" for c in spec["send"]):
+            raise ValueError(f"step {spec!r}: send takes one line, no control characters")
         if spec.get("expect"):
             re.compile(spec["expect"])
         return {"kind": "send", "line": spec["send"], "expect": spec.get("expect"), "timeout": float(timeout)}
     if "log" in spec:
         re.compile(spec["log"])
-        return {"kind": "log", "expect": spec["log"], "timeout": float(timeout)}
+        since = spec.get("since", "step")
+        if since not in ("step", "boot"):
+            raise ValueError(f"step {spec!r}: since is \"step\" or \"boot\"")
+        return {"kind": "log", "expect": spec["log"], "timeout": float(timeout), "since": since}
     raise ValueError(f"step {spec!r}: want get/post/put/delete, set, wait, send or log")
 
 
@@ -371,8 +376,10 @@ class Steps(threading.Thread):
 
     def _run(self) -> bootlog.Verdict:
         answered = False
+        self.prev_mark = self.mark = 0
         for st in self.steps:
             what = describe(st)
+            self.prev_mark, self.mark = self.mark, len(self.uart.buf) if self.uart else 0
             bad = getattr(self, "_" + st["kind"])(st, answered)
             answered |= st["kind"] == "http"
             if bad:
@@ -397,7 +404,8 @@ class Steps(threading.Thread):
                 status, body = 0, f"({e})"
             answered = True
             tries -= 1
-            bad = (f"status {status}, want {st['status']}" if st["status"] is not None and status != st["status"]
+            bad = ("no answer: " + body if status == 0 and st["status"] is None
+                   else f"status {status}, want {st['status']}" if st["status"] is not None and status != st["status"]
                    else f"reply doesn't match /{st['expect']}/" if st["expect"] and not re.search(st["expect"], body)
                    else "")
             if not bad or tries <= 0 or time.monotonic() > self.deadline:
@@ -443,7 +451,7 @@ class Steps(threading.Thread):
         return "" if ok else f"the console didn't show /{st['expect']}/ within {st['timeout']:g}s"
 
     def _log(self, st: dict, answered: bool) -> str:
-        ok = self._until(st["expect"], 0, st["timeout"])
+        ok = self._until(st["expect"], 0 if st.get("since") == "boot" else self.prev_mark, st["timeout"])
         self.lines.append(f"{describe(st)} -> {'ok' if ok else 'FAIL'}")
         return "" if ok else f"not in the UART within {st['timeout']:g}s"
 
@@ -606,9 +614,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fw qemu: no {build}/flasher_args.json: build first (fw build"
               + (" --qemu" if build.name == "build-qemu" else "") + ")", file=sys.stderr)
         return 2
+    if a.scenario and (a.log or a.http or a.hold):
+        print("fw qemu: --scenario takes its steps and log from fw.json: drop --log, --http and --hold",
+              file=sys.stderr)
+        return 2
     try:
         if a.scenario:
             runs = scenarios(q, a.scenario)
+            if a.image_only and len(runs) > 1:
+                raise ValueError("--image-only writes one image: name one scenario")
         else:
             runs = [(None, q, [parse_probe(x) for x in (a.http or q.get("http") or [])])]
     except (ValueError, re.error) as e:
@@ -626,12 +640,19 @@ def main(argv: list[str] | None = None) -> int:
                                 + (otadata(partitions(build), rq["boot"]) if rq.get("boot") else []))
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
             print(f"fw qemu: {name + ': ' if name else ''}{e}", file=sys.stderr)
-            return 2
+            if not name:
+                return 2
+            failed.append(name)
+            continue
         if a.image_only:
             print(image)
             return 0
         expect = a.expect or rq.get("expect") or bootlog.DEFAULT_EXPECT
-        re.compile(expect)
+        try:
+            re.compile(expect)
+        except re.error as e:
+            print(f"fw qemu: {name + ': ' if name else ''}expect /{expect}/: {e}", file=sys.stderr)
+            return 2
         gdb = None
         if any(st.get("kind") == "set" for st in steps):
             exe, elf = fwlib.find_gdb(chip), app_elf(build, rq.get("boot"))

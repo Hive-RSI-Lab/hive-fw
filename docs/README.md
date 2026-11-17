@@ -186,25 +186,28 @@ order and fails at the first that doesn't hold. Each logs to
 The steps:
 
 - an HTTP request as in `"http"`, plus `"retry": N` (ask again once a
-  second until it matches) and `"status": "any"`;
+  second until it matches) and `"status": "any"` (any reply, but there
+  must be one);
 - `{"set": "fw_adc1_raw[6] = 1250"}` or a list: gdb attaches through
   QEMU's gdb stub, sets each, and detaches. The shims' variables
-  (`fw_adc1_raw[]`, `fw_gpio_level`, `fw_heap_leave`) are how a fault is
+  (`fw_adc1_raw[]`, `fw_gpio_level` for pins in `fw_gpio_mask`, which
+  `"gpio"` sets, and `fw_heap_leave`) are how a fault is
   injected: a brown-out is the ADC reading a sagging rail, a lost PD
   contract is the power-good pin going high, a squeeze is `fw_heap_leave`.
   Any global of the firmware's works too. Needs `xtensa-esp32-elf-gdb`
   (from `fw setup`);
 - `{"wait": S}`;
 - `{"send": "console line", "expect": "regex", "timeout": S}` on UART0;
-- `{"log": "regex", "timeout": S}`: a line the UART showed since boot, or
-  shows within S.
+- `{"log": "regex", "timeout": S}`: a line the UART showed since the step
+  before began (the fault's effect, not a boot line that happens to match),
+  or shows within S; `"since": "boot"` searches the whole log.
 
 Faults with no variable to set: QEMU has no I2S, so a tone is an output
 stall; a full flash is `"overrides": {"nvs_fill": ...}`.
 The hifi receiver's `firmware/fw.json` has six scenarios to copy.
 
 A boot that seems to stop with no fatal line, its log timestamps frozen, is
-usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp::1234` and
+usually a busy-wait on missing hardware. Run QEMU with `-gdb tcp:127.0.0.1:1234` and
 `xtensa-esp32-elf-gdb -ex 'target remote :1234' -ex 'thread apply all bt'`
 to see where. That's how the ADC wait was found.
 

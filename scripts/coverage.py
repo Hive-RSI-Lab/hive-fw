@@ -41,7 +41,9 @@ def gcov_json(gcda: Path) -> list[dict]:
     for line in r.stdout.splitlines():
         line = line.strip()
         if line.startswith("{"):
-            out += json.loads(line).get("files", [])
+            j = json.loads(line)
+            cwd = j.get("current_working_directory")
+            out += [dict(f, cwd=cwd) if cwd else f for f in j.get("files", [])]
     return out
 
 
@@ -50,8 +52,8 @@ def merge(records: list[dict], root: Path) -> dict[str, dict]:
     files: dict[str, dict] = {}
     for f in records:
         p = Path(f["file"])
-        if not p.is_absolute():
-            p = root / p
+        if not p.is_absolute():  # relative to where it was compiled
+            p = Path(f.get("cwd") or root) / p
         key = str(p.resolve())
         e = files.setdefault(key, {"lines": {}, "branches": {}, "functions": {}})
         for ln in f.get("lines", []):
@@ -175,6 +177,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"fw coverage: {tdir}/Makefile has no coverage target (build with --coverage, run, "
                   "leave the .gcda files under the test dir), or pass --gcda DIR", file=sys.stderr)
             return 2
+        for old in tdir.rglob("*.gcda"):  # counts add up across runs
+            old.unlink()
         r = subprocess.run(["make", "-C", str(tdir), "coverage", f"FW_UNITY={hosttest.UNITY}"],
                            capture_output=True, text=True)
         if r.returncode:

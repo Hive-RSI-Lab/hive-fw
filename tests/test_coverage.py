@@ -27,6 +27,11 @@ class Merge(unittest.TestCase):
         self.assertEqual((r["functions"], r["functions_run"]), (1, 1))
         self.assertEqual(coverage.totals(rows)["line_pct"], 100.0)
 
+    def test_relative_paths_resolve_where_gcc_ran(self):
+        rec = {"file": "../core/a.c", "cwd": "/p/test", "lines": [], "functions": []}
+        self.assertEqual(list(coverage.merge([rec], Path("/p"))), ["/p/core/a.c"])
+        self.assertEqual(list(coverage.merge([dict(rec, cwd=None)], Path("/p/x"))), ["/p/core/a.c"])
+
     def test_ranges(self):
         self.assertEqual(coverage.ranges([3, 4, 5, 9, 11, 12]), "3-5,9,11-12")
         self.assertEqual(coverage.ranges([]), "")

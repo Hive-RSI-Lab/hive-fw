@@ -6,7 +6,8 @@
  * --qemu links this file with -Wl,--wrap=vTaskDelay, and nearly every task
  * sleeps through it) takes the rest, in 512-byte blocks, from the heap
  * fw_heap_caps names (internal 8-bit RAM unless set). fw_heap_held says how
- * much it holds. Setting fw_heap_leave back to 0 frees it all. Built without
+ * much it holds. Raising fw_heap_leave gives blocks back until that much is
+free; setting it back to 0 frees it all. Built without
  * IDF headers.
  */
 #include <stddef.h>
@@ -40,6 +41,12 @@ void __wrap_vTaskDelay(unsigned ticks)
                 *b = hog;
                 hog = b;
                 fw_heap_held += FW_BLOCK;
+            }
+            while (hog && heap_caps_get_free_size(caps) < fw_heap_leave) {
+                void **next = *hog;
+                heap_caps_free(hog);
+                hog = next;
+                fw_heap_held -= FW_BLOCK;
             }
         } else {
             while (hog) {

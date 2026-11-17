@@ -39,6 +39,8 @@ FAKE_QEMU = textwrap.dedent("""\
         def do_GET(self):
             if self.path == "/api/v1/info":
                 self.reply(200, {"model": "hifi-lite", "api": 1})
+            elif self.path == "/api/v1/drop":  # a hung firmware: no reply at all
+                return
             elif self.path == "/api/v1/count":
                 hits[0] += 1
                 self.reply(200 if hits[0] >= 3 else 503, {"n": hits[0]})
@@ -185,7 +187,7 @@ class ScenarioSteps(unittest.TestCase):
 
     def test_parse_refuses(self):
         for bad in ({"set": []}, {"set": "a\nb"}, {"set": [1]}, {"wait": -1}, {"wait": True},
-                    {"send": "a\nb"}, {"send": "x", "timeout": 0}, {"log": "("},
+                    {"send": "a\nb"}, {"send": "\x01x"}, {"log": "x", "since": "never"}, {"send": "x", "timeout": 0}, {"log": "("},
                     {"get": "/a", "retry": -1}, {"get": "/a", "retry": True}, {"nothing": 1}, 3):
             with self.assertRaises(Exception, msg=bad):
                 qemu.parse_step(bad)
@@ -204,6 +206,18 @@ class ScenarioSteps(unittest.TestCase):
         v = self.boot([{"get": "/api/v1/count", "retry": 0}])  # a fresh guest: the first hit is a 503
         self.assertFalse(v.ok)
         v = self.boot([{"get": "/api/v1/nothing", "status": "any"}])
+        self.assertTrue(v.ok, v.reason)
+        v = self.boot(["GET /api/v1/info", {"get": "/api/v1/drop", "status": "any"}])
+        self.assertFalse(v.ok)  # any reply, but there must be one
+        self.assertIn("no answer", v.reason)
+
+    def test_log_looks_from_the_step_before(self):
+        v = self.boot([{"send": "hifi info"}, {"log": "console> hifi info ok", "timeout": 5}])
+        self.assertTrue(v.ok, v.reason)
+        v = self.boot([{"wait": 0.1}, {"log": "Starting scheduler", "timeout": 1}])
+        self.assertFalse(v.ok)  # a boot line is not the fault's effect
+        self.assertIn("not in the UART", v.reason)
+        v = self.boot([{"wait": 0.1}, {"log": "Starting scheduler", "since": "boot", "timeout": 1}])
         self.assertTrue(v.ok, v.reason)
 
     def test_set_runs_gdb_on_the_stub(self):
@@ -259,6 +273,16 @@ class Scenarios(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(qemu.main([str(d), "--scenario", "list"]), 0)
         self.assertEqual(out.getvalue(), "brownout: VBUS sags\n")
+
+    def test_main_refuses_mixed_flags(self):
+        d = Path(tempfile.mkdtemp())
+        (d / "build").mkdir()
+        (d / "build" / "flasher_args.json").write_text("{}")
+        (d / "fw.json").write_text(json.dumps({"idf": "v4.4.8", "qemu": {"scenarios": {
+            "a": {"steps": [{"wait": 1}]}, "b": {"steps": [{"wait": 1}]}}}}))
+        for extra in (["--scenario", "a", "--log", str(d / "x")], ["--scenario", "a", "--http", "GET /"],
+                      ["--scenario", "all", "--image-only"]):
+            self.assertEqual(qemu.main([str(d), "--build", str(d / "build")] + extra), 2, extra)
 
 
 class NvsFill(unittest.TestCase):
