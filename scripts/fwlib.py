@@ -81,8 +81,34 @@ def find_idf(idf: str) -> Path | None:
     return None
 
 
+QEMU_VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*-[0-9]{8}$")  # 9.2.2-20261109, as toolver names it
+
+
+def _qemu_side(spec: str) -> Path | None:
+    """A QEMU build toolver installed side by side ($HIVE_TOOL_VERSIONS/esp-qemu/
+    VERSION, with a PROVENANCE.json): "newest", or exactly one version."""
+    base = Path(os.environ.get("HIVE_TOOL_VERSIONS") or Path.home() / "tools" / "versions") / "esp-qemu"
+    have = sorted((p.parent.name for p in base.glob("*/PROVENANCE.json") if QEMU_VERSION.match(p.parent.name)),
+                  key=lambda v: [int(n) for n in re.split(r"[.-]", v)])
+    v = have[-1] if spec == "newest" and have else spec
+    q = base / v / "qemu" / "bin" / "qemu-system-xtensa"
+    return q if v in have and q.is_file() else None
+
+
 def find_qemu() -> Path | None:
-    """qemu-system-xtensa from the first root that has the pinned build."""
+    """qemu-system-xtensa from the first root that has the pinned build, or the
+    build $HIVE_TOOL_ESP_QEMU names (unset or "default": the pin; "newest" or
+    9.2.2-YYYYMMDD: a toolver side install). A named build that isn't there is
+    an error, not a quiet fall back to the pin, so a bench never runs the wrong one."""
+    spec = os.environ.get("HIVE_TOOL_ESP_QEMU", "").strip()
+    if spec and spec != "default" and spec != QEMU["tag"].removeprefix("esp-develop-"):
+        if spec != "newest" and not QEMU_VERSION.match(spec):
+            raise SystemExit(f"fw: HIVE_TOOL_ESP_QEMU={spec!r}: want default, newest or 9.2.2-YYYYMMDD")
+        q = _qemu_side(spec)
+        if spec != "newest" and not q:
+            raise SystemExit(f"fw: HIVE_TOOL_ESP_QEMU={spec}: no such install (toolver install esp-qemu {spec})")
+        if q:
+            return q
     for r in roots():
         q = r / f"qemu-{QEMU['tag']}" / "qemu" / "bin" / "qemu-system-xtensa"
         if q.is_file():
@@ -111,9 +137,13 @@ def find_gdb(chip: str = "esp32") -> Path | None:
 
 
 def qemu_env(qemu: Path) -> dict[str, str]:
-    lib = qemu.parent.parent.parent / "lib"
+    """LD_LIBRARY_PATH with the build's lib/ (fw setup puts libslirp there). A
+    toolver side install has no lib/ of its own, so the pinned build's follows."""
+    libs = [qemu.parent.parent.parent / "lib"]
+    libs += [r / f"qemu-{QEMU['tag']}" / "lib" for r in roots()]
+    libs = [str(x) for x in dict.fromkeys(libs) if x.is_dir()] or [str(libs[0])]
     env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = str(lib) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    env["LD_LIBRARY_PATH"] = ":".join(libs) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
     return env
 
 
