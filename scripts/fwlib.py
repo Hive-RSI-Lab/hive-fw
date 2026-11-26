@@ -27,10 +27,10 @@ DEFAULT_TARGET = "esp32"
 # Espressif's QEMU (ESP32 and ESP32-S3 machines) and the one library it
 # needs that Ubuntu 26.04 doesn't ship by default.
 QEMU = {
-    "tag": "esp-develop-9.2.2-20260417",
-    "url": "https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/"
-           "qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz",
-    "sha256": "0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35",
+    "tag": "esp-develop-9.2.2-20261109",
+    "url": "https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20261109/"
+           "qemu-xtensa-softmmu-esp_develop_9.2.2_20261109-x86_64-linux-gnu.tar.xz",
+    "sha256": "fbc3bffa9fa71192847969a627a584aabe2e86d85bed4902a096ff06c2b8a815",
 }
 SLIRP = {
     "url": "http://archive.ubuntu.com/ubuntu/pool/main/libs/libslirp/libslirp0_4.7.0-1ubuntu3_amd64.deb",
