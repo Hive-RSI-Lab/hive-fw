@@ -22,6 +22,13 @@ work needs, in any order. `bin/fw help` lists them all. Each script in
   - The roots are searched in this order: `$FW_TOOLS`, `/hive/tools/fw` (the
     Hive's shared folder, read-only to you), then `$FW_HOME` (default
     `~/.cache/fw`).
+  - `HIVE_TOOL_ESP_QEMU` picks another QEMU build for `fw qemu`, `fw env` and
+    `fw doctor`: unset or `default` is the pinned one; `newest` or a version
+    such as `9.2.2-20261109` is a side install the Hive's toolver made in
+    `$HIVE_TOOL_VERSIONS/esp-qemu/VERSION` (default `~/tools/versions`). A
+    named version that isn't installed is an error. A side install borrows the
+    pinned build's libslirp. This is how a new QEMU is benched before the pin
+    moves.
   - Without a shared copy, setup installs into your HOME. ESP-IDF v4.4.8
     took about 15 minutes and 2 GB there on a loaded machine.
   - A version every agent needs belongs in `/hive/tools/fw`. Ask a warden

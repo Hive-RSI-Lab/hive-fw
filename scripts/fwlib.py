@@ -27,10 +27,10 @@ DEFAULT_TARGET = "esp32"
 # Espressif's QEMU (ESP32 and ESP32-S3 machines) and the one library it
 # needs that Ubuntu 26.04 doesn't ship by default.
 QEMU = {
-    "tag": "esp-develop-9.2.2-20260417",
-    "url": "https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/"
-           "qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz",
-    "sha256": "0eecb2a34a5586c0e59110f77b9343b7b336e82fdb0e1a30e1dc1bab8a547e35",
+    "tag": "esp-develop-9.2.2-20261109",
+    "url": "https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20261109/"
+           "qemu-xtensa-softmmu-esp_develop_9.2.2_20261109-x86_64-linux-gnu.tar.xz",
+    "sha256": "fbc3bffa9fa71192847969a627a584aabe2e86d85bed4902a096ff06c2b8a815",
 }
 SLIRP = {
     "url": "http://archive.ubuntu.com/ubuntu/pool/main/libs/libslirp/libslirp0_4.7.0-1ubuntu3_amd64.deb",
@@ -81,8 +81,34 @@ def find_idf(idf: str) -> Path | None:
     return None
 
 
+QEMU_VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*-[0-9]{8}$")  # 9.2.2-20261109, as toolver names it
+
+
+def _qemu_side(spec: str) -> Path | None:
+    """A QEMU build toolver installed side by side ($HIVE_TOOL_VERSIONS/esp-qemu/
+    VERSION, with a PROVENANCE.json): "newest", or exactly one version."""
+    base = Path(os.environ.get("HIVE_TOOL_VERSIONS") or Path.home() / "tools" / "versions") / "esp-qemu"
+    have = sorted((p.parent.name for p in base.glob("*/PROVENANCE.json") if QEMU_VERSION.match(p.parent.name)),
+                  key=lambda v: [int(n) for n in re.split(r"[.-]", v)])
+    v = have[-1] if spec == "newest" and have else spec
+    q = base / v / "qemu" / "bin" / "qemu-system-xtensa"
+    return q if v in have and q.is_file() else None
+
+
 def find_qemu() -> Path | None:
-    """qemu-system-xtensa from the first root that has the pinned build."""
+    """qemu-system-xtensa from the first root that has the pinned build, or the
+    build $HIVE_TOOL_ESP_QEMU names (unset or "default": the pin; "newest" or
+    9.2.2-YYYYMMDD: a toolver side install). A named build that isn't there is
+    an error, not a quiet fall back to the pin, so a bench never runs the wrong one."""
+    spec = os.environ.get("HIVE_TOOL_ESP_QEMU", "").strip()
+    if spec and spec != "default" and spec != QEMU["tag"].removeprefix("esp-develop-"):
+        if spec != "newest" and not QEMU_VERSION.match(spec):
+            raise SystemExit(f"fw: HIVE_TOOL_ESP_QEMU={spec!r}: want default, newest or 9.2.2-YYYYMMDD")
+        q = _qemu_side(spec)
+        if spec != "newest" and not q:
+            raise SystemExit(f"fw: HIVE_TOOL_ESP_QEMU={spec}: no such install (toolver install esp-qemu {spec})")
+        if q:
+            return q
     for r in roots():
         q = r / f"qemu-{QEMU['tag']}" / "qemu" / "bin" / "qemu-system-xtensa"
         if q.is_file():
@@ -111,9 +137,13 @@ def find_gdb(chip: str = "esp32") -> Path | None:
 
 
 def qemu_env(qemu: Path) -> dict[str, str]:
-    lib = qemu.parent.parent.parent / "lib"
+    """LD_LIBRARY_PATH with the build's lib/ (fw setup puts libslirp there). A
+    toolver side install has no lib/ of its own, so the pinned build's follows."""
+    libs = [qemu.parent.parent.parent / "lib"]
+    libs += [r / f"qemu-{QEMU['tag']}" / "lib" for r in roots()]
+    libs = [str(x) for x in dict.fromkeys(libs) if x.is_dir()] or [str(libs[0])]
     env = dict(os.environ)
-    env["LD_LIBRARY_PATH"] = str(lib) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    env["LD_LIBRARY_PATH"] = ":".join(libs) + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
     return env
 
 

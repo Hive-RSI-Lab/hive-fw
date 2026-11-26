@@ -66,6 +66,55 @@ class Roots(unittest.TestCase):
             self.assertIsNone(fwlib.find_idf("v5.5.6"))
 
 
+class QemuVersion(unittest.TestCase):
+    """$HIVE_TOOL_ESP_QEMU picks a toolver side install of Espressif's QEMU."""
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.home = self.d / "home"
+        pin = self.home / f"qemu-{fwlib.QEMU['tag']}"
+        (pin / "qemu" / "bin").mkdir(parents=True)
+        (pin / "qemu" / "bin" / "qemu-system-xtensa").write_text("")
+        (pin / "lib").mkdir()
+        self.pin = pin / "qemu" / "bin" / "qemu-system-xtensa"
+        self.vers = self.d / "versions"
+        for v, prov in (("9.9.9-20980101", True), ("9.9.9-20990101", False)):
+            b = self.vers / "esp-qemu" / v / "qemu" / "bin"
+            b.mkdir(parents=True)
+            (b / "qemu-system-xtensa").write_text("")
+            if prov:
+                (self.vers / "esp-qemu" / v / "PROVENANCE.json").write_text("{}")
+        self.side = self.vers / "esp-qemu" / "9.9.9-20980101" / "qemu" / "bin" / "qemu-system-xtensa"
+
+    def env(self, spec):
+        e = {"HOME": str(self.d), "PATH": os.environ.get("PATH", ""), "FW_HOME": str(self.home),
+             "HIVE_TOOLS": str(self.d / "none"), "HIVE_TOOL_VERSIONS": str(self.vers)}
+        if spec is not None:
+            e["HIVE_TOOL_ESP_QEMU"] = spec
+        return mock.patch.dict(os.environ, e, clear=True)
+
+    def test_unset_and_default_are_the_pin(self):
+        for spec in (None, "", "default", fwlib.QEMU["tag"].removeprefix("esp-develop-")):
+            with self.env(spec):
+                self.assertEqual(fwlib.find_qemu(), self.pin, spec)
+
+    def test_a_version_and_newest(self):
+        with self.env("9.9.9-20980101"):
+            self.assertEqual(fwlib.find_qemu(), self.side)
+        with self.env("newest"):  # 20990101 has no PROVENANCE.json, so it doesn't count
+            self.assertEqual(fwlib.find_qemu(), self.side)
+
+    def test_a_missing_or_bad_version_is_an_error(self):
+        for spec in ("9.9.9-20990101", "9.2.2-20990101", "../../x", "latest"):
+            with self.env(spec), self.assertRaises(SystemExit, msg=spec):
+                fwlib.find_qemu()
+
+    def test_side_install_borrows_the_pins_lib(self):
+        with self.env(None):
+            ld = fwlib.qemu_env(self.side)["LD_LIBRARY_PATH"].split(":")
+        self.assertEqual(ld[0], str(self.pin.parent.parent.parent / "lib"))
+
+
 class Gdb(unittest.TestCase):
     def test_newest_that_runs(self):
         root = Path(tempfile.mkdtemp())
